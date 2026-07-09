@@ -5,7 +5,7 @@ import { VitePWA } from "vite-plugin-pwa";
 // IMPORTANT: change this to match your GitHub repo name
 // e.g. if repo is "artisan-market", base should be "/artisan-market/"
 export default defineConfig({
-  base: "/artisan-market/",
+  base: "/mitti-ki-dukan/",
   plugins: [
     react(),
     VitePWA({
@@ -15,8 +15,8 @@ export default defineConfig({
         name: "हमारी मिट्टी की दुकान",
         short_name: "मिट्टी की दुकान",
         description: "आपके ज़िले के कारीगरों के असली, घर के बने प्रोडक्ट",
-        start_url: "/artisan-market/",
-        scope: "/artisan-market/",
+        start_url: "/mitti-ki-dukan/",
+        scope: "/mitti-ki-dukan/",
         display: "standalone",
         background_color: "#FBF5EC",
         theme_color: "#A8472E",
