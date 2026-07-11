@@ -210,6 +210,14 @@ async function deleteChatMessage(chatId, messageId) {
   await deleteDoc(doc(db, "chats", chatId, "messages", messageId));
 }
 
+async function deleteEntireChat(chatId) {
+  const snap = await getDocs(collection(db, "chats", chatId, "messages"));
+  for (const d of snap.docs) {
+    await deleteDoc(doc(db, "chats", chatId, "messages", d.id));
+  }
+  await deleteDoc(doc(db, "chats", chatId));
+}
+
 function useChatMessages(chatId) {
   const [messages, setMessages] = useState([]);
   useEffect(() => {
@@ -286,6 +294,16 @@ function ChatThread({ chatId, currentUid, currentName, currentRole, title, subti
     } finally { setSending(false); }
   };
 
+  const handleDeleteChat = async () => {
+    if (!confirm("पूरी बातचीत हमेशा के लिए डिलीट करें? यह वापस नहीं आएगी।")) return;
+    try {
+      await deleteEntireChat(chatId);
+      onClose();
+    } catch (e) {
+      alert("Chat डिलीट नहीं हो पाई: " + e.message);
+    }
+  };
+
   return (
     <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center" style={{ background: "rgba(0,0,0,0.4)" }}>
       <div className="w-full sm:max-w-md h-[85vh] sm:h-[600px] rounded-t-2xl sm:rounded-2xl flex flex-col overflow-hidden" style={{ background: C.bg }}>
@@ -294,7 +312,12 @@ function ChatThread({ chatId, currentUid, currentName, currentRole, title, subti
             <p className="font-semibold text-sm truncate" style={{ color: "#FFFFFF" }}>{title}</p>
             {subtitle && <p className="text-xs truncate" style={{ color: "#F2E2D5" }}>{subtitle}</p>}
           </div>
-          <button onClick={onClose} className="shrink-0 ml-2"><X className="w-5 h-5" style={{ color: "#FFFFFF" }} /></button>
+          <div className="flex items-center gap-1 shrink-0">
+            <button onClick={handleDeleteChat} title="पूरी बातचीत डिलीट करें" className="p-1.5 rounded-full">
+              <Trash2 className="w-4 h-4" style={{ color: "#F2E2D5" }} />
+            </button>
+            <button onClick={onClose} className="p-1.5 ml-1"><X className="w-5 h-5" style={{ color: "#FFFFFF" }} /></button>
+          </div>
         </div>
 
         <div className="flex-1 overflow-y-auto px-4 py-3 flex flex-col gap-2">
