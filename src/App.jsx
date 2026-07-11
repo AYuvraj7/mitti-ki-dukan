@@ -1,17 +1,20 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import {
   MessageCircle, CreditCard, MapPin, ArrowLeft, ShoppingBasket, Search,
-  Lock, Plus, Pencil, Trash2, LogOut, Save, X, Loader2, UserPlus, Check, Clock, Shield,
+  Lock, Plus, Pencil, Trash2, LogOut, Save, X, Loader2, UserPlus, Check, Clock, Shield, Send, Inbox,
 } from "lucide-react";
 import { db, auth } from "./firebase.js";
 import {
   collection, getDocs, addDoc, updateDoc, deleteDoc, doc, getDoc, setDoc,
+  onSnapshot, query, orderBy, where, serverTimestamp,
 } from "firebase/firestore";
 import {
   signInWithEmailAndPassword, createUserWithEmailAndPassword, onAuthStateChanged, signOut,
+  signInAnonymously,
 } from "firebase/auth";
 
 const SUPER_ADMIN_EMAIL = "thrivesocietyofficial@gmail.com";
+const ADMIN_SENTINEL = "ADMIN"; // chats mein admin ko represent karne ke liye placeholder (real UID ki jagah)
 const SOCIETY_UPI_ID = "ayuvrajsingh901@ybl";
 const MONTHLY_FEE = 100;
 
@@ -177,6 +180,222 @@ function useAuthUser() {
   return { user, authLoading };
 }
 
+// ─── Chat system (Customer ↔ Vendor ↔ Admin) ──────────────────────────────────
+async function ensureAnonymousAuth() {
+  if (auth.currentUser) return auth.currentUser;
+  const cred = await signInAnonymously(auth);
+  return cred.user;
+}
+
+async function ensureChat(chatId, data) {
+  const ref = doc(db, "chats", chatId);
+  const snap = await getDoc(ref);
+  if (!snap.exists()) {
+    await setDoc(ref, {
+      ...data,
+      lastMessage: "",
+      lastMessageAt: serverTimestamp(),
+      createdAt: serverTimestamp(),
+    });
+  }
+  return chatId;
+}
+
+async function sendChatMessage(chatId, msg) {
+  await addDoc(collection(db, "chats", chatId, "messages"), { ...msg, createdAt: serverTimestamp() });
+  await updateDoc(doc(db, "chats", chatId), { lastMessage: msg.text, lastMessageAt: serverTimestamp() });
+}
+
+async function deleteChatMessage(chatId, messageId) {
+  await deleteDoc(doc(db, "chats", chatId, "messages", messageId));
+}
+
+function useChatMessages(chatId) {
+  const [messages, setMessages] = useState([]);
+  useEffect(() => {
+    if (!chatId) { setMessages([]); return; }
+    const q = query(collection(db, "chats", chatId, "messages"), orderBy("createdAt", "asc"));
+    const unsub = onSnapshot(q, (snap) => setMessages(snap.docs.map((d) => ({ id: d.id, ...d.data() }))));
+    return unsub;
+  }, [chatId]);
+  return messages;
+}
+
+// Diye gaye uid ko participants array mein rakhne wale sabhi chats (jaise sirf vendor ke liye, ya sirf customer ke liye)
+function useUserChats(uid) {
+  const [chats, setChats] = useState([]);
+  useEffect(() => {
+    if (!uid) { setChats([]); return; }
+    const q = query(collection(db, "chats"), where("participants", "array-contains", uid));
+    const unsub = onSnapshot(q, (snap) => {
+      const list = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+      list.sort((a, b) => (b.lastMessageAt?.toMillis?.() || 0) - (a.lastMessageAt?.toMillis?.() || 0));
+      setChats(list);
+    });
+    return unsub;
+  }, [uid]);
+  return chats;
+}
+
+// Admin ke saare chats (jin sabme ADMIN_SENTINEL participant hai)
+function useAdminChats(enabled) {
+  const [chats, setChats] = useState([]);
+  useEffect(() => {
+    if (!enabled) { setChats([]); return; }
+    const q = query(collection(db, "chats"), where("participants", "array-contains", ADMIN_SENTINEL));
+    const unsub = onSnapshot(q, (snap) => {
+      const list = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+      list.sort((a, b) => (b.lastMessageAt?.toMillis?.() || 0) - (a.lastMessageAt?.toMillis?.() || 0));
+      setChats(list);
+    });
+    return unsub;
+  }, [enabled]);
+  return chats;
+}
+
+function timeAgo(ts) {
+  const ms = ts?.toMillis ? ts.toMillis() : (ts ? new Date(ts).getTime() : null);
+  if (!ms) return "";
+  const mins = Math.floor((Date.now() - ms) / 60000);
+  if (mins < 1) return "अभी";
+  if (mins < 60) return mins + " मिनट पहले";
+  const hrs = Math.floor(mins / 60);
+  if (hrs < 24) return hrs + " घंटे पहले";
+  return Math.floor(hrs / 24) + " दिन पहले";
+}
+
+// Chat conversation window — message list + input box
+function ChatThread({ chatId, currentUid, currentName, currentRole, title, subtitle, onClose }) {
+  const messages = useChatMessages(chatId);
+  const [text, setText] = useState("");
+  const [sending, setSending] = useState(false);
+  const endRef = useRef(null);
+
+  useEffect(() => { endRef.current?.scrollIntoView({ behavior: "smooth" }); }, [messages.length]);
+
+  const handleSend = async () => {
+    const t = text.trim();
+    if (!t || sending) return;
+    setSending(true);
+    setText("");
+    try {
+      await sendChatMessage(chatId, { senderId: currentUid, senderName: currentName, senderRole: currentRole, text: t });
+    } catch (e) {
+      alert("Message नहीं भेजा जा सका — Firestore rules check करें। Error: " + e.message);
+      setText(t);
+    } finally { setSending(false); }
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center" style={{ background: "rgba(0,0,0,0.4)" }}>
+      <div className="w-full sm:max-w-md h-[85vh] sm:h-[600px] rounded-t-2xl sm:rounded-2xl flex flex-col overflow-hidden" style={{ background: C.bg }}>
+        <div className="px-4 py-3 flex items-center justify-between shrink-0" style={{ background: C.accent }}>
+          <div className="min-w-0">
+            <p className="font-semibold text-sm truncate" style={{ color: "#FFFFFF" }}>{title}</p>
+            {subtitle && <p className="text-xs truncate" style={{ color: "#F2E2D5" }}>{subtitle}</p>}
+          </div>
+          <button onClick={onClose} className="shrink-0 ml-2"><X className="w-5 h-5" style={{ color: "#FFFFFF" }} /></button>
+        </div>
+
+        <div className="flex-1 overflow-y-auto px-4 py-3 flex flex-col gap-2">
+          {messages.length === 0 && (
+            <p className="text-xs text-center mt-6" style={{ color: C.textMuted }}>अभी कोई message नहीं। बात शुरू करें!</p>
+          )}
+          {messages.map((m) => {
+            const mine = m.senderId === currentUid;
+            const handleDelete = async () => {
+              if (!confirm("यह message डिलीट करें?")) return;
+              try { await deleteChatMessage(chatId, m.id); }
+              catch (e) { alert("Delete नहीं हो पाया: " + e.message); }
+            };
+            return (
+              <div key={m.id} className={"group flex items-end gap-1.5 max-w-[75%] " + (mine ? "self-end flex-row-reverse" : "self-start")}>
+                <div className="px-3 py-2 rounded-xl text-sm"
+                  style={mine ? { background: C.accent, color: "#FFFFFF" } : { background: C.card, color: C.textBody, border: "1px solid " + C.border }}>
+                  {!mine && <p className="text-[10px] font-semibold mb-0.5" style={{ color: C.accent }}>{m.senderName}</p>}
+                  <p className="whitespace-pre-wrap break-words">{m.text}</p>
+                </div>
+                {mine && (
+                  <button onClick={handleDelete}
+                    className="shrink-0 p-1 rounded-full opacity-60 hover:opacity-100"
+                    style={{ color: C.textMuted }} title="Message डिलीट करें">
+                    <Trash2 className="w-3.5 h-3.5" />
+                  </button>
+                )}
+              </div>
+            );
+          })}
+          <div ref={endRef} />
+        </div>
+
+        <div className="flex items-center gap-2 px-3 py-3 shrink-0" style={{ borderTop: "1px solid " + C.border, background: C.card }}>
+          <input value={text} onChange={(e) => setText(e.target.value)}
+            onKeyDown={(e) => { if (e.key === "Enter") handleSend(); }}
+            placeholder="Message लिखें..." className="flex-1 px-3 py-2 rounded-xl outline-none text-sm"
+            style={{ background: C.bg, border: "1px solid " + C.border, color: C.textBody }} />
+          <button onClick={handleSend} disabled={sending || !text.trim()}
+            className="p-2.5 rounded-xl disabled:opacity-50 shrink-0" style={{ background: C.accent, color: "#FFFFFF" }}>
+            {sending ? <Loader2 className="w-4 h-4 animate-spin" /> : <Send className="w-4 h-4" />}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// Chats ki list (vendor/admin inbox ke liye) — click karke thread khulta hai
+function ChatInbox({ chats, currentUid, onOpen, emptyText }) {
+  return (
+    <div className="flex flex-col gap-2">
+      {chats.map((c) => {
+        const names = c.participantNames || {};
+        const otherEntry = Object.entries(names).find(([uid]) => uid !== currentUid && uid !== ADMIN_SENTINEL);
+        const otherName = otherEntry ? otherEntry[1] : (c.participants?.includes(ADMIN_SENTINEL) ? "Admin / Support" : "User");
+        return (
+          <button key={c.id} onClick={() => onOpen(c, otherName)}
+            className="text-left p-3 rounded-xl flex items-center justify-between gap-3"
+            style={{ background: C.card, border: "1px solid " + C.border }}>
+            <div className="min-w-0 flex-1">
+              <p className="font-medium text-sm truncate" style={{ color: C.textHeading }}>{otherName}</p>
+              {c.productName && <p className="text-xs truncate" style={{ color: C.textMuted }}>बारे में: {c.productName}</p>}
+              <p className="text-xs truncate mt-0.5" style={{ color: C.textMuted }}>{c.lastMessage || "कोई message नहीं"}</p>
+            </div>
+            <div className="flex flex-col items-end gap-1 shrink-0">
+              <MessageCircle className="w-4 h-4" style={{ color: C.accent }} />
+              <span className="text-[10px]" style={{ color: C.textMuted }}>{timeAgo(c.lastMessageAt)}</span>
+            </div>
+          </button>
+        );
+      })}
+      {chats.length === 0 && <p className="text-sm" style={{ color: C.textMuted }}>{emptyText}</p>}
+    </div>
+  );
+}
+
+// Pehli baar chat karne se pehle customer ka naam le lete hain (login nahi chahiye)
+function NamePrompt({ onSubmit, onCancel }) {
+  const [name, setName] = useState("");
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center px-5" style={{ background: "rgba(0,0,0,0.4)" }}>
+      <div className="w-full max-w-sm p-5 rounded-2xl" style={{ background: C.card }}>
+        <p className="font-semibold text-sm mb-3" style={{ color: C.textHeading }}>Chat शुरू करने के लिए अपना नाम बताएं</p>
+        <input value={name} onChange={(e) => setName(e.target.value)}
+          onKeyDown={(e) => { if (e.key === "Enter" && name.trim()) onSubmit(name.trim()); }}
+          placeholder="आपका नाम" autoFocus
+          className="w-full px-4 py-2.5 rounded-xl outline-none text-sm mb-3"
+          style={{ background: C.bg, border: "1px solid " + C.border, color: C.textBody }} />
+        <div className="flex gap-2">
+          <button onClick={() => name.trim() && onSubmit(name.trim())} disabled={!name.trim()}
+            className="flex-1 px-4 py-2.5 rounded-xl text-sm font-medium disabled:opacity-50"
+            style={{ background: C.accent, color: "#FFFFFF" }}>Chat शुरू करें</button>
+          <button onClick={onCancel} className="px-4 py-2.5 rounded-xl text-sm"
+            style={{ background: C.bg, border: "1px solid " + C.border, color: C.textBody }}>Cancel</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ─── WhatsApp order form ──────────────────────────────────────────────────────
 function WhatsAppOrder({ product }) {
   const [showForm, setShowForm] = useState(false);
@@ -251,7 +470,7 @@ function ProductCard({ product, onOpen }) {
   );
 }
 
-function ProductDetail({ product, onBack }) {
+function ProductDetail({ product, onBack, onChatWithVendor }) {
   const hasUpi = !!product.upiId;
   const upiLink = hasUpi
     ? "upi://pay?pa=" + encodeURIComponent(product.upiId) +
@@ -280,6 +499,13 @@ function ProductDetail({ product, onBack }) {
         </div>
         <div className="flex flex-col gap-3">
           <WhatsAppOrder product={product} />
+          {onChatWithVendor && (
+            <button onClick={() => onChatWithVendor(product)}
+              className="flex items-center justify-center gap-2 px-5 py-3 rounded-xl font-medium text-sm"
+              style={{ background: C.card, border: "1px solid " + C.accent, color: C.accent }}>
+              <MessageCircle className="w-4 h-4" /> विक्रेता से Chat करें
+            </button>
+          )}
           {hasUpi ? (
             <>
               <a href={upiLink}
@@ -424,26 +650,10 @@ function RegisterScreen({ onDone, onCancel }) {
 
         {/* ── Subscription Info ─────────────────────────────── */}
         <div className="p-3 rounded-xl mb-3 text-xs" style={{ background: C.accentSoft, color: C.textBody }}>
-          <p className="font-semibold mb-1" style={{ color: C.textHeading }}>Platform Subscription Plans</p>
-          {PAYMENT_ENABLED ? (
-            <>
-              <p className="mb-1">&#x20B9;{MONTHLY_FEE}/महीना में क्या शामिल है:</p>
-              <ul className="list-disc pl-4 space-y-0.5">
-                <li>Facebook/Instagram पर Ads — ताकि ज़्यादा ग्राहक आपके products देखें</li>
-                <li>Website hosting और database का असली खर्चा</li>
-                <li>Platform की देखभाल और सुधार (Hector365 की तरफ से)</li>
-              </ul>
-              <p className="mt-2">हर 30 दिन में फिर से &#x20B9;{MONTHLY_FEE} pay करना होगा।</p>
-            </>
-          ) : (
-            <div className="flex items-start gap-2">
-              <span className="text-lg">🎉</span>
-              <div>
-                <p className="font-semibold" style={{ color: "#226B2E" }}>Platform is currently FREE!</p>
-                <p className="mt-0.5">अभी platform पूरी तरह मुफ़्त है — कोई payment नहीं चाहिए। भविष्य में paid plans आएंगे, पर पहले से registered vendors को अलग से सूचित किया जाएगा।</p>
-              </div>
-            </div>
-          )}
+          <p className="font-semibold mb-1" style={{ color: C.textHeading }}>🎉 Seller Registration – FREE</p>
+          <p className="mb-1">✅ Mitti Ki Dukaan par apni online dukaan banana bilkul FREE hai.</p>
+          <p className="mb-1">📢 Agar aap future me Facebook/Instagram par apne area me promotion karwana chahte hain, to woh ek optional paid marketing service hogi.</p>
+          <p>💰 Sabhi orders ka payment seedha aapke UPI account me jayega. Mitti Ki Dukaan koi commission nahi leti.</p>
         </div>
 
         {/* ── Payment Section ────────────────────────────────── */}
@@ -519,6 +729,24 @@ function VendorPanel({ vendor, products, addProduct, updateProduct, removeProduc
   const [phoneInput, setPhoneInput] = useState(vendor.phone || "");
   const [savingUpi, setSavingUpi] = useState(false);
   const [claimingPay, setClaimingPay] = useState(false);
+  const [activeChat, setActiveChat] = useState(null);
+  const myChats = useUserChats(ownerId);
+
+  const openChat = (chat, otherName) => setActiveChat({ chatId: chat.id, title: otherName, subtitle: chat.productName ? "बारे में: " + chat.productName : null });
+
+  const openAdminChat = async () => {
+    const chatId = "va_" + ownerId;
+    try {
+      await ensureChat(chatId, {
+        participants: [ownerId, ADMIN_SENTINEL],
+        participantNames: { [ownerId]: vendor.name, [ADMIN_SENTINEL]: "Admin / Support" },
+        type: "vendor-admin",
+      });
+      setActiveChat({ chatId, title: "Admin / Support", subtitle: null });
+    } catch (e) {
+      alert("Chat खुल नहीं पाया — Firestore rules check करें। Error: " + e.message);
+    }
+  };
 
   const myProducts = products.filter((p) => p.ownerId === ownerId);
 
@@ -668,6 +896,21 @@ function VendorPanel({ vendor, products, addProduct, updateProduct, removeProduc
           )}
         </div>
 
+        {/* Messages */}
+        <div className="p-4 rounded-xl mb-4" style={{ background: C.card, border: "1px solid " + C.border }}>
+          <div className="flex items-center justify-between mb-3">
+            <div className="flex items-center gap-2">
+              <Inbox className="w-4 h-4" style={{ color: C.accent }} />
+              <p className="font-semibold text-sm" style={{ color: C.textHeading }}>Messages ({myChats.length})</p>
+            </div>
+            <button onClick={openAdminChat} className="flex items-center gap-1.5 text-xs font-medium px-3 py-1.5 rounded-lg"
+              style={{ background: C.accentSoft, color: C.accent }}>
+              <MessageCircle className="w-3.5 h-3.5" /> Admin से Chat करें
+            </button>
+          </div>
+          <ChatInbox chats={myChats} currentUid={ownerId} onOpen={openChat} emptyText="अभी कोई message नहीं है।" />
+        </div>
+
         {/* Products */}
         {editing === null && (
           <div>
@@ -742,6 +985,10 @@ function VendorPanel({ vendor, products, addProduct, updateProduct, removeProduc
           </div>
         )}
       </div>
+      {activeChat && (
+        <ChatThread chatId={activeChat.chatId} currentUid={ownerId} currentName={vendor.name} currentRole="vendor"
+          title={activeChat.title} subtitle={activeChat.subtitle} onClose={() => setActiveChat(null)} />
+      )}
     </div>
   );
 }
@@ -761,6 +1008,22 @@ function StatCard({ icon, label, value, tint }) {
   );
 }
 
+// Clickable version of StatCard — tab navigation ke liye
+function TabButton({ icon, label, value, tint, active, onClick }) {
+  return (
+    <button onClick={onClick} className="flex items-center gap-3 p-4 rounded-2xl text-left transition"
+      style={{ background: active ? C.accentSoft : C.card, border: "1.5px solid " + (active ? C.accent : C.border) }}>
+      <div className="p-2.5 rounded-xl shrink-0" style={{ background: tint.bg, color: tint.fg }}>
+        {icon}
+      </div>
+      <div>
+        <p className="text-2xl font-bold leading-none" style={{ color: active ? C.accent : C.textHeading }}>{value}</p>
+        <p className="text-xs mt-0.5" style={{ color: active ? C.accent : C.textMuted }}>{label}</p>
+      </div>
+    </button>
+  );
+}
+
 function SectionHeader({ icon, title, count, tint }) {
   return (
     <div className="flex items-center gap-2 mb-3">
@@ -773,10 +1036,15 @@ function SectionHeader({ icon, title, count, tint }) {
   );
 }
 
-function SuperAdminPanel({ vendors, reloadVendors, products, removeProduct, onExit }) {
+function SuperAdminPanel({ vendors, reloadVendors, products, removeProduct, onExit, adminUid }) {
   const [busyId, setBusyId] = useState(null);
   const [search, setSearch] = useState("");
   const [expandedVendor, setExpandedVendor] = useState(null);
+  const [activeChat, setActiveChat] = useState(null);
+  const [activeTab, setActiveTab] = useState("pending");
+  const adminChats = useAdminChats(true);
+
+  const openChat = (chat, otherName) => setActiveChat({ chatId: chat.id, title: otherName, subtitle: chat.productName ? "बारे में: " + chat.productName : null });
 
   const approve = async (uid) => {
     setBusyId(uid);
@@ -839,148 +1107,176 @@ function SuperAdminPanel({ vendors, reloadVendors, products, removeProduct, onEx
       </div>
 
       <div className="max-w-5xl mx-auto px-5 py-5">
-        {/* Stats overview */}
+        {/* Tabs — click karke sirf wahi section dikhega */}
         <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-6">
-          <StatCard icon={<Clock className="w-4 h-4" />} label="Pending Approval" value={pending.length}
+          <TabButton active={activeTab === "pending"} onClick={() => setActiveTab("pending")}
+            icon={<Clock className="w-4 h-4" />} label="Pending Approval" value={pending.length}
             tint={{ bg: "#FCEFC7", fg: "#8A6A00" }} />
-          <StatCard icon={<UserPlus className="w-4 h-4" />} label="Approved विक्रेता" value={approved.length}
+          <TabButton active={activeTab === "vendors"} onClick={() => setActiveTab("vendors")}
+            icon={<UserPlus className="w-4 h-4" />} label="Approved विक्रेता" value={approved.length}
             tint={{ bg: "#DCF3DD", fg: "#226B2E" }} />
-          <StatCard icon={<ShoppingBasket className="w-4 h-4" />} label="कुल Products" value={products.length}
+          <TabButton active={activeTab === "products"} onClick={() => setActiveTab("products")}
+            icon={<ShoppingBasket className="w-4 h-4" />} label="कुल Products" value={products.length}
             tint={{ bg: "#E4E8FB", fg: "#33429E" }} />
-          <StatCard icon={<MessageCircle className="w-4 h-4" />} label="Payment Reminder" value={reminderCount}
-            tint={{ bg: "#FBE2DD", fg: "#B83A2A" }} />
+          <TabButton active={activeTab === "messages"} onClick={() => setActiveTab("messages")}
+            icon={<Inbox className="w-4 h-4" />} label="Messages" value={adminChats.length}
+            tint={{ bg: "#F0E6FA", fg: "#6B3FA0" }} />
         </div>
 
-        {/* Search */}
-        <div className="flex items-center gap-2 px-4 py-2.5 rounded-xl mb-6" style={{ background: C.card, border: "1px solid " + C.border }}>
-          <Search className="w-4 h-4" style={{ color: C.textMuted }} />
-          <input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="विक्रेता या product खोजें..."
-            className="flex-1 outline-none text-sm bg-transparent" style={{ color: C.textBody }} />
-          {search && (
-            <button onClick={() => setSearch("")} style={{ color: C.textMuted }}><X className="w-4 h-4" /></button>
-          )}
-        </div>
-
-        {/* Pending approvals */}
-        <SectionHeader icon={<Clock className="w-4 h-4" />} title="Approval का इंतज़ार" count={pending.length}
-          tint={{ bg: "#FCEFC7", fg: "#8A6A00" }} />
-        <div className="grid sm:grid-cols-2 gap-3 mb-8">
-          {pending.map((v) => (
-            <div key={v.uid} className="p-4 rounded-2xl" style={{ background: C.card, border: "1px solid #E0B400" }}>
-              <p className="font-medium text-sm" style={{ color: C.textHeading }}>{v.name}</p>
-              <p className="text-xs mb-2" style={{ color: C.textMuted }}>{v.village} · पिनकोड {v.pincode} · {v.phone} · {v.email}</p>
-              {v.lastTxnId && (
-                <p className="text-xs mb-3 font-medium px-2 py-1 rounded inline-block" style={{ background: "#DCF3DD", color: "#226B2E" }}>
-                  Transaction ID: {v.lastTxnId}
-                </p>
-              )}
-              <div className="flex gap-2">
-                <button onClick={() => approve(v.uid)} disabled={busyId === v.uid}
-                  className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium disabled:opacity-50"
-                  style={{ background: "#DCF3DD", color: "#226B2E" }}>
-                  {busyId === v.uid ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Check className="w-3.5 h-3.5" />} Approve करें
-                </button>
-                <button onClick={() => reject(v.uid)} disabled={busyId === v.uid}
-                  className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium disabled:opacity-50"
-                  style={{ background: "#FBE2DD", color: "#B83A2A" }}>
-                  <X className="w-3.5 h-3.5" /> Reject करें
-                </button>
-              </div>
-            </div>
-          ))}
-          {pending.length === 0 && (
-            <p className="text-sm sm:col-span-2" style={{ color: C.textMuted }}>अभी कोई pending request नहीं है।</p>
-          )}
-        </div>
-
-        {/* Approved vendors */}
-        <SectionHeader icon={<UserPlus className="w-4 h-4" />} title="Approved विक्रेता" count={filteredApproved.length}
-          tint={{ bg: "#DCF3DD", fg: "#226B2E" }} />
-        <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-3 mb-8">
-          {filteredApproved.map((v) => {
-            const count = products.filter((p) => p.ownerId === v.uid).length;
-            const days = v.lastPaymentClaim
-              ? Math.floor((Date.now() - new Date(v.lastPaymentClaim).getTime()) / (1000 * 60 * 60 * 24))
-              : null;
-            const needsReminder = days !== null && days >= 26;
-            const isExpanded = expandedVendor === v.uid;
-            const waReminder = "https://wa.me/91" + (v.phone || "").replace(/\D/g, "") +
-              "?text=" + encodeURIComponent("नमस्ते " + v.name + "! मिट्टी की दुकान का ₹100 मासिक शुल्क देय है। " + SOCIETY_UPI_ID + " पर pay करें और Transaction ID भेजें। धन्यवाद!");
-            return (
-              <div key={v.uid} className="p-4 rounded-2xl flex flex-col gap-3"
-                style={{ background: C.card, border: "1px solid " + (needsReminder ? "#E0B400" : isExpanded ? C.accent : C.border) }}>
-                <div className="flex items-start justify-between gap-2">
-                  <div className="flex-1 min-w-0">
-                    <p className="font-medium text-sm truncate" style={{ color: C.textHeading }}>{v.name}</p>
-                    <p className="text-xs mt-0.5" style={{ color: C.textMuted }}>{v.village}</p>
-                  </div>
-                  <button onClick={() => removeVendor(v.uid)} disabled={busyId === v.uid}
-                    className="p-1.5 rounded-lg shrink-0 disabled:opacity-50" style={{ background: "#FBE2DD", color: "#B83A2A" }}>
-                    <Trash2 className="w-3.5 h-3.5" />
-                  </button>
-                </div>
-
-                <p className="text-xs" style={{ color: C.textMuted }}>
-                  {v.lastPaymentClaim ? "payment: " + new Date(v.lastPaymentClaim).toLocaleDateString("hi-IN") : "कोई payment नहीं"}
-                  {days !== null ? " (" + days + " दिन पहले)" : ""}
-                </p>
-
-                {needsReminder && v.phone && (
-                  <a href={waReminder} target="_blank" rel="noopener noreferrer"
-                    className="inline-flex items-center gap-1 text-xs px-2 py-1 rounded self-start"
-                    style={{ background: "#DCF3DD", color: "#226B2E" }}>
-                    <MessageCircle className="w-3 h-3" /> WhatsApp Reminder भेजें
-                  </a>
-                )}
-
-                <button onClick={() => setExpandedVendor(isExpanded ? null : v.uid)}
-                  className="flex items-center justify-between text-xs font-medium px-3 py-1.5 rounded-lg mt-auto"
-                  style={{ background: C.accentSoft, color: C.accent }}>
-                  <span>{count} Products देखें</span>
-                  <span>{isExpanded ? "▲" : "▼"}</span>
-                </button>
-              </div>
-            );
-          })}
-          {filteredApproved.length === 0 && (
-            <p className="text-sm sm:col-span-2 lg:col-span-3" style={{ color: C.textMuted }}>कोई विक्रेता नहीं मिला।</p>
-          )}
-        </div>
-
-        {/* Products */}
-        <SectionHeader
-          icon={<ShoppingBasket className="w-4 h-4" />}
-          title={expandedVendorObj ? expandedVendorObj.name + " के Products" : "सभी Products"}
-          count={filteredProducts.length}
-          tint={{ bg: "#E4E8FB", fg: "#33429E" }}
-        />
-        {expandedVendorObj && (
-          <button onClick={() => setExpandedVendor(null)} className="text-xs font-medium mb-3 inline-flex items-center gap-1" style={{ color: C.accent }}>
-            <X className="w-3.5 h-3.5" /> Filter हटाएं, सभी products देखें
+        {reminderCount > 0 && activeTab !== "vendors" && (
+          <button onClick={() => setActiveTab("vendors")}
+            className="w-full flex items-center gap-2 px-4 py-2.5 rounded-xl mb-6 text-left"
+            style={{ background: "#FBE2DD", border: "1px solid #E0B400" }}>
+            <MessageCircle className="w-4 h-4 shrink-0" style={{ color: "#B83A2A" }} />
+            <p className="text-xs font-medium" style={{ color: "#B83A2A" }}>
+              {reminderCount} विक्रेता का Payment Reminder due है — देखने के लिए यहाँ क्लिक करें
+            </p>
           </button>
         )}
-        <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-3">
-          {filteredProducts.map((p) => (
-            <div key={p.id} className="rounded-2xl overflow-hidden flex flex-col"
-              style={{ background: C.card, border: "1px solid " + C.border }}>
-              <img src={p.img} alt={p.name} className="w-full h-28 object-cover" />
-              <div className="p-3 flex flex-col gap-1 flex-1">
-                <p className="font-medium text-sm leading-tight" style={{ color: C.textHeading }}>{p.name}</p>
-                <p className="text-xs" style={{ color: C.textMuted }}>{p.maker}</p>
-                <div className="flex items-center justify-between mt-auto pt-2">
-                  <span className="text-sm font-bold" style={{ color: C.accent }}>&#x20B9;{p.price}</span>
-                  <button onClick={() => handleRemoveProduct(p.id)} className="p-1.5 rounded-lg" style={{ background: "#FBE2DD", color: "#B83A2A" }}>
-                    <Trash2 className="w-3.5 h-3.5" />
+
+        {/* Search — pending tab mein search nahi chahiye, baaki sab mein chahiye */}
+        {activeTab !== "pending" && (
+          <div className="flex items-center gap-2 px-4 py-2.5 rounded-xl mb-6" style={{ background: C.card, border: "1px solid " + C.border }}>
+            <Search className="w-4 h-4" style={{ color: C.textMuted }} />
+            <input value={search} onChange={(e) => setSearch(e.target.value)}
+              placeholder={activeTab === "vendors" ? "विक्रेता खोजें..." : activeTab === "products" ? "Product खोजें..." : "..."}
+              className="flex-1 outline-none text-sm bg-transparent" style={{ color: C.textBody }} />
+            {search && (
+              <button onClick={() => setSearch("")} style={{ color: C.textMuted }}><X className="w-4 h-4" /></button>
+            )}
+          </div>
+        )}
+
+        {/* Messages tab */}
+        {activeTab === "messages" && (
+          <ChatInbox chats={adminChats} currentUid={adminUid} onOpen={openChat} emptyText="अभी कोई message नहीं है।" />
+        )}
+
+        {/* Pending approvals tab */}
+        {activeTab === "pending" && (
+          <div className="grid sm:grid-cols-2 gap-3">
+            {pending.map((v) => (
+              <div key={v.uid} className="p-4 rounded-2xl" style={{ background: C.card, border: "1px solid #E0B400" }}>
+                <p className="font-medium text-sm" style={{ color: C.textHeading }}>{v.name}</p>
+                <p className="text-xs mb-2" style={{ color: C.textMuted }}>{v.village} · पिनकोड {v.pincode} · {v.phone} · {v.email}</p>
+                {v.lastTxnId && (
+                  <p className="text-xs mb-3 font-medium px-2 py-1 rounded inline-block" style={{ background: "#DCF3DD", color: "#226B2E" }}>
+                    Transaction ID: {v.lastTxnId}
+                  </p>
+                )}
+                <div className="flex gap-2">
+                  <button onClick={() => approve(v.uid)} disabled={busyId === v.uid}
+                    className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium disabled:opacity-50"
+                    style={{ background: "#DCF3DD", color: "#226B2E" }}>
+                    {busyId === v.uid ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Check className="w-3.5 h-3.5" />} Approve करें
+                  </button>
+                  <button onClick={() => reject(v.uid)} disabled={busyId === v.uid}
+                    className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium disabled:opacity-50"
+                    style={{ background: "#FBE2DD", color: "#B83A2A" }}>
+                    <X className="w-3.5 h-3.5" /> Reject करें
                   </button>
                 </div>
               </div>
+            ))}
+            {pending.length === 0 && (
+              <p className="text-sm sm:col-span-2" style={{ color: C.textMuted }}>अभी कोई pending request नहीं है।</p>
+            )}
+          </div>
+        )}
+
+        {/* Approved vendors tab */}
+        {activeTab === "vendors" && (
+          <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-3">
+            {filteredApproved.map((v) => {
+              const count = products.filter((p) => p.ownerId === v.uid).length;
+              const days = v.lastPaymentClaim
+                ? Math.floor((Date.now() - new Date(v.lastPaymentClaim).getTime()) / (1000 * 60 * 60 * 24))
+                : null;
+              const needsReminder = days !== null && days >= 26;
+              const isExpanded = expandedVendor === v.uid;
+              const waReminder = "https://wa.me/91" + (v.phone || "").replace(/\D/g, "") +
+                "?text=" + encodeURIComponent("नमस्ते " + v.name + "! मिट्टी की दुकान का ₹100 मासिक शुल्क देय है। " + SOCIETY_UPI_ID + " पर pay करें और Transaction ID भेजें। धन्यवाद!");
+              return (
+                <div key={v.uid} className="p-4 rounded-2xl flex flex-col gap-3"
+                  style={{ background: C.card, border: "1px solid " + (needsReminder ? "#E0B400" : isExpanded ? C.accent : C.border) }}>
+                  <div className="flex items-start justify-between gap-2">
+                    <div className="flex-1 min-w-0">
+                      <p className="font-medium text-sm truncate" style={{ color: C.textHeading }}>{v.name}</p>
+                      <p className="text-xs mt-0.5" style={{ color: C.textMuted }}>{v.village}</p>
+                    </div>
+                    <button onClick={() => removeVendor(v.uid)} disabled={busyId === v.uid}
+                      className="p-1.5 rounded-lg shrink-0 disabled:opacity-50" style={{ background: "#FBE2DD", color: "#B83A2A" }}>
+                      <Trash2 className="w-3.5 h-3.5" />
+                    </button>
+                  </div>
+
+                  <p className="text-xs" style={{ color: C.textMuted }}>
+                    {v.lastPaymentClaim ? "payment: " + new Date(v.lastPaymentClaim).toLocaleDateString("hi-IN") : "कोई payment नहीं"}
+                    {days !== null ? " (" + days + " दिन पहले)" : ""}
+                  </p>
+
+                  {needsReminder && v.phone && (
+                    <a href={waReminder} target="_blank" rel="noopener noreferrer"
+                      className="inline-flex items-center gap-1 text-xs px-2 py-1 rounded self-start"
+                      style={{ background: "#DCF3DD", color: "#226B2E" }}>
+                      <MessageCircle className="w-3 h-3" /> WhatsApp Reminder भेजें
+                    </a>
+                  )}
+
+                  <button onClick={() => { setExpandedVendor(v.uid); setActiveTab("products"); }}
+                    className="flex items-center justify-between text-xs font-medium px-3 py-1.5 rounded-lg mt-auto"
+                    style={{ background: C.accentSoft, color: C.accent }}>
+                    <span>{count} Products देखें</span>
+                    <span>→</span>
+                  </button>
+                </div>
+              );
+            })}
+            {filteredApproved.length === 0 && (
+              <p className="text-sm sm:col-span-2 lg:col-span-3" style={{ color: C.textMuted }}>कोई विक्रेता नहीं मिला।</p>
+            )}
+          </div>
+        )}
+
+        {/* Products tab */}
+        {activeTab === "products" && (
+          <div>
+            {expandedVendorObj && (
+              <div className="flex items-center justify-between mb-3">
+                <p className="text-sm font-medium" style={{ color: C.textHeading }}>{expandedVendorObj.name} के Products</p>
+                <button onClick={() => setExpandedVendor(null)} className="text-xs font-medium inline-flex items-center gap-1" style={{ color: C.accent }}>
+                  <X className="w-3.5 h-3.5" /> Filter हटाएं
+                </button>
+              </div>
+            )}
+            <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-3">
+              {filteredProducts.map((p) => (
+                <div key={p.id} className="rounded-2xl overflow-hidden flex flex-col"
+                  style={{ background: C.card, border: "1px solid " + C.border }}>
+                  <img src={p.img} alt={p.name} className="w-full h-28 object-cover" />
+                  <div className="p-3 flex flex-col gap-1 flex-1">
+                    <p className="font-medium text-sm leading-tight" style={{ color: C.textHeading }}>{p.name}</p>
+                    <p className="text-xs" style={{ color: C.textMuted }}>{p.maker}</p>
+                    <div className="flex items-center justify-between mt-auto pt-2">
+                      <span className="text-sm font-bold" style={{ color: C.accent }}>&#x20B9;{p.price}</span>
+                      <button onClick={() => handleRemoveProduct(p.id)} className="p-1.5 rounded-lg" style={{ background: "#FBE2DD", color: "#B83A2A" }}>
+                        <Trash2 className="w-3.5 h-3.5" />
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              ))}
+              {filteredProducts.length === 0 && (
+                <p className="text-sm col-span-2 sm:col-span-3 lg:col-span-4" style={{ color: C.textMuted }}>कोई product नहीं मिला।</p>
+              )}
             </div>
-          ))}
-          {filteredProducts.length === 0 && (
-            <p className="text-sm col-span-2 sm:col-span-3 lg:col-span-4" style={{ color: C.textMuted }}>कोई product नहीं मिला।</p>
-          )}
-        </div>
+          </div>
+        )}
       </div>
+      {activeChat && (
+        <ChatThread chatId={activeChat.chatId} currentUid={adminUid} currentName="Admin / Support" currentRole="admin"
+          title={activeChat.title} subtitle={activeChat.subtitle} onClose={() => setActiveChat(null)} />
+      )}
     </div>
   );
 }
@@ -997,6 +1293,72 @@ export default function ArtisanMarket() {
   const [query, setQuery] = useState("");
   const [pincodeQuery, setPincodeQuery] = useState("");
   const [authView, setAuthView] = useState(null);
+
+  const [activeChat, setActiveChat] = useState(null);
+  const [pendingChatAction, setPendingChatAction] = useState(null);
+  const [customerName, setCustomerName] = useState(() => {
+    try { return localStorage.getItem("mkd_customer_name") || ""; } catch { return ""; }
+  });
+
+  const withCustomerName = (action) => {
+    if (customerName) { action(customerName); return; }
+    setPendingChatAction(() => action);
+  };
+
+  const submitCustomerName = (name) => {
+    setCustomerName(name);
+    try { localStorage.setItem("mkd_customer_name", name); } catch {}
+    if (pendingChatAction) { pendingChatAction(name); setPendingChatAction(null); }
+  };
+
+  const openVendorChat = (product) => {
+    withCustomerName(async (name) => {
+      try {
+        const cUser = await ensureAnonymousAuth();
+        const chatId = "cv_" + [cUser.uid, product.ownerId].sort().join("_");
+        await ensureChat(chatId, {
+          participants: [cUser.uid, product.ownerId],
+          participantNames: { [cUser.uid]: name, [product.ownerId]: product.maker || "विक्रेता" },
+          type: "customer-vendor",
+          productId: product.id || null,
+          productName: product.name || null,
+        });
+        setActiveChat({ chatId, title: product.maker || "विक्रेता", subtitle: "बारे में: " + product.name });
+      } catch (e) {
+        alert("Chat खुल नहीं पाया — Firestore rules check करें (Anonymous Auth enabled है ना?)। Error: " + e.message);
+      }
+    });
+  };
+
+  const openSupportChat = () => {
+    withCustomerName(async (name) => {
+      try {
+        const cUser = await ensureAnonymousAuth();
+        const chatId = "ca_" + cUser.uid;
+        await ensureChat(chatId, {
+          participants: [cUser.uid, ADMIN_SENTINEL],
+          participantNames: { [cUser.uid]: name, [ADMIN_SENTINEL]: "Admin / Support" },
+          type: "customer-admin",
+        });
+        setActiveChat({ chatId, title: "Admin / Support", subtitle: null });
+      } catch (e) {
+        alert("Chat खुल नहीं पाया — Firestore rules check करें (Anonymous Auth enabled है ना?)। Error: " + e.message);
+      }
+    });
+  };
+
+  const chatOverlays = (
+    <>
+      {pendingChatAction && (
+        <NamePrompt onSubmit={submitCustomerName} onCancel={() => setPendingChatAction(null)} />
+      )}
+      {activeChat && (
+        <ChatThread chatId={activeChat.chatId} currentUid={user?.uid || auth.currentUser?.uid}
+          currentName={customerName || "Customer"} currentRole="customer"
+          title={activeChat.title} subtitle={activeChat.subtitle} onClose={() => setActiveChat(null)} />
+      )}
+    </>
+  );
 
   const allCategories = ["सभी", ...CATEGORIES];
   const filtered = products.filter((p) =>
@@ -1021,14 +1383,14 @@ export default function ArtisanMarket() {
     );
   }
 
-  if (authView === "login" && !user) return <LoginScreen onCancel={() => setAuthView(null)} onShowRegister={() => setAuthView("register")} />;
-  if (authView === "register" && !user) return <RegisterScreen onDone={() => setAuthView(null)} onCancel={() => setAuthView("login")} />;
+  if (authView === "login" && (!user || user.isAnonymous)) return <LoginScreen onCancel={() => setAuthView(null)} onShowRegister={() => setAuthView("register")} />;
+  if (authView === "register" && (!user || user.isAnonymous)) return <RegisterScreen onDone={() => setAuthView(null)} onCancel={() => setAuthView("login")} />;
 
   if (user && user.email === SUPER_ADMIN_EMAIL) {
-    return <SuperAdminPanel vendors={vendors} reloadVendors={reloadVendors} products={products} removeProduct={removeProduct} onExit={() => signOut(auth)} />;
+    return <SuperAdminPanel vendors={vendors} reloadVendors={reloadVendors} products={products} removeProduct={removeProduct} onExit={() => signOut(auth)} adminUid={user.uid} />;
   }
 
-  if (user && !vendorLoading) {
+  if (user && !user.isAnonymous && !vendorLoading) {
     if (!vendor || vendor.status === "pending") return <PendingApprovalScreen onExit={() => signOut(auth)} />;
     if (vendor.status === "rejected") {
       return (
@@ -1049,8 +1411,9 @@ export default function ArtisanMarket() {
     return (
       <div className="min-h-screen w-full" style={{ background: C.bg }}>
         <div className="max-w-2xl mx-auto">
-          <ProductDetail product={selected} onBack={() => setSelected(null)} />
+          <ProductDetail product={selected} onBack={() => setSelected(null)} onChatWithVendor={openVendorChat} />
         </div>
+        {chatOverlays}
       </div>
     );
   }
@@ -1109,6 +1472,15 @@ export default function ArtisanMarket() {
       <p className="text-xs text-center py-6" style={{ color: C.textMuted }}>
         Thrive Skills Educational Society की एक पहल · Technology Partner: Hector365
       </p>
+
+      {/* Floating Support Chat Button */}
+      <button onClick={openSupportChat}
+        className="fixed bottom-5 right-5 flex items-center gap-2 px-4 py-3 rounded-full shadow-lg z-40"
+        style={{ background: C.accent, color: "#FFFFFF" }}>
+        <MessageCircle className="w-4 h-4" /> <span className="text-sm font-medium">Help</span>
+      </button>
+
+      {chatOverlays}
     </div>
   );
 }
