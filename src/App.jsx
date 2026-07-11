@@ -317,8 +317,8 @@ function ChatThread({ chatId, currentUid, currentName, currentRole, title, subti
                 </div>
                 {mine && (
                   <button onClick={handleDelete}
-                    className="shrink-0 p-1 rounded-full opacity-60 hover:opacity-100"
-                    style={{ color: C.textMuted }} title="Message डिलीट करें">
+                    className="shrink-0 p-1.5 rounded-full"
+                    style={{ color: "#B83A2A", background: "#FBE2DD" }} title="Message डिलीट करें">
                     <Trash2 className="w-3.5 h-3.5" />
                   </button>
                 )}
