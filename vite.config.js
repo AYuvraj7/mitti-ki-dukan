@@ -1,9 +1,9 @@
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
 import { VitePWA } from "vite-plugin-pwa";
-
+ 
 // IMPORTANT: change this to match your GitHub repo name
-// e.g. if repo is "artisan-market", base should be "/artisan-market/"
+// e.g. if repo is "mitti-ki-dukan", base should be "/mitti-ki-dukan/"
 export default defineConfig({
   base: "/mitti-ki-dukan/",
   plugins: [
@@ -29,11 +29,10 @@ export default defineConfig({
       workbox: {
         globPatterns: ["**/*.{js,css,html,png,svg,ico}"],
         navigateFallbackDenylist: [/^\/__/],
+        // Firestore/Auth ke liye koi route register NAHI karna — isse service worker
+        // in requests ko bilkul touch nahi karega, aur Firestore ka realtime
+        // (WebChannel) connection bina interference ke chalega
         runtimeCaching: [
-          {
-            urlPattern: ({ url }) => url.origin.includes("firestore.googleapis.com"),
-            handler: "NetworkOnly",
-          },
           {
             urlPattern: ({ url }) => url.origin.includes("res.cloudinary.com"),
             handler: "CacheFirst",
