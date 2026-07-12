@@ -858,6 +858,9 @@ function VendorPanel({ vendor, products, addProduct, updateProduct, removeProduc
   const [uploading, setUploading] = useState(false);
   const [upiInput, setUpiInput] = useState(vendor.upiId || "");
   const [phoneInput, setPhoneInput] = useState(vendor.phone || "");
+  const [nameInput, setNameInput] = useState(vendor.name || "");
+  const [villageInput, setVillageInput] = useState(vendor.village || "");
+  const [pincodeInput, setPincodeInput] = useState(vendor.pincode || "");
   const [savingUpi, setSavingUpi] = useState(false);
   const [claimingPay, setClaimingPay] = useState(false);
   const [activeChat, setActiveChat] = useState(null);
@@ -952,9 +955,34 @@ function VendorPanel({ vendor, products, addProduct, updateProduct, removeProduc
   };
 
   const saveUpi = async () => {
+    if (!nameInput.trim() || !villageInput.trim() || !pincodeInput.trim()) {
+      alert("नाम, गांव/area और पिनकोड खाली नहीं रह सकते।");
+      return;
+    }
     setSavingUpi(true);
     try {
-      await updateDoc(doc(db, "vendors", ownerId), { upiId: upiInput, phone: phoneInput });
+      const updatedFields = {
+        name: nameInput.trim(),
+        village: villageInput.trim(),
+        pincode: pincodeInput.trim(),
+        upiId: upiInput,
+        phone: phoneInput,
+      };
+      await updateDoc(doc(db, "vendors", ownerId), updatedFields);
+
+      // vendor ki purani details jo products mein save thi (maker/village/pincode/upiId/sellerPhone),
+      // unko bhi naye details se sync karo taaki listing pe purana naam na dikhे
+      const myOwnProducts = products.filter((p) => p.ownerId === ownerId);
+      for (const p of myOwnProducts) {
+        await updateDoc(doc(db, "products", p.id), {
+          maker: updatedFields.name,
+          village: updatedFields.village,
+          pincode: updatedFields.pincode,
+          upiId: updatedFields.upiId,
+          sellerPhone: updatedFields.phone,
+        });
+      }
+
       if (reloadVendor) await reloadVendor();
     } finally { setSavingUpi(false); }
   };
@@ -1021,6 +1049,20 @@ function VendorPanel({ vendor, products, addProduct, updateProduct, removeProduc
         {/* Profile / UPI */}
         <div className="flex flex-col gap-2 p-3 rounded-xl mb-4" style={{ background: C.card, border: "1px solid " + C.border }}>
           <p className="text-xs font-semibold" style={{ color: C.textMuted }}>अपनी details update करें</p>
+          <input value={nameInput} onChange={(e) => setNameInput(e.target.value)}
+            placeholder="आपका नाम"
+            className="px-3 py-2 rounded-lg outline-none text-sm"
+            style={{ background: C.bg, border: "1px solid " + C.border, color: C.textBody }} />
+          <div className="flex gap-2">
+            <input value={villageInput} onChange={(e) => setVillageInput(e.target.value)}
+              placeholder="गांव/area"
+              className="flex-1 px-3 py-2 rounded-lg outline-none text-sm"
+              style={{ background: C.bg, border: "1px solid " + C.border, color: C.textBody }} />
+            <input value={pincodeInput} onChange={(e) => setPincodeInput(e.target.value.replace(/\D/g, "").slice(0, 6))}
+              placeholder="पिनकोड" inputMode="numeric"
+              className="w-28 px-3 py-2 rounded-lg outline-none text-sm"
+              style={{ background: C.bg, border: "1px solid " + C.border, color: C.textBody }} />
+          </div>
           <input value={phoneInput} onChange={(e) => setPhoneInput(e.target.value)}
             placeholder="WhatsApp/मोबाइल नंबर (10 digit)"
             className="px-3 py-2 rounded-lg outline-none text-sm"
@@ -1036,6 +1078,7 @@ function VendorPanel({ vendor, products, addProduct, updateProduct, removeProduc
               {savingUpi ? <Loader2 className="w-4 h-4 animate-spin" /> : "Save"}
             </button>
           </div>
+          {savingUpi && <p className="text-[11px]" style={{ color: C.textMuted }}>Profile और आपके सभी products update हो रहे हैं...</p>}
         </div>
 
         {/* Monthly Fee */}
