@@ -429,6 +429,24 @@ function WhatsAppOrder({ product }) {
   const [cAddress, setCAddress] = useState("");
   const [cPincode, setCPincode] = useState("");
 
+  useEffect(() => {
+    try {
+      const saved = JSON.parse(localStorage.getItem("mkd_customer_details") || "null");
+      if (saved) {
+        setCName(saved.name || "");
+        setCPhone(saved.phone || "");
+        setCAddress(saved.address || "");
+        setCPincode(saved.pincode || "");
+      }
+    } catch {}
+  }, []);
+
+  const saveDetails = () => {
+    try {
+      localStorage.setItem("mkd_customer_details", JSON.stringify({ name: cName, phone: cPhone, address: cAddress, pincode: cPincode }));
+    } catch {}
+  };
+
   const cleanPhone = (product.sellerPhone || "").replace(/\D/g, "");
   const phoneForLink = cleanPhone.length === 10 ? "91" + cleanPhone : cleanPhone;
 
@@ -457,7 +475,7 @@ function WhatsAppOrder({ product }) {
 
   return (
     <div className="p-4 rounded-xl flex flex-col gap-2" style={{ background: C.card, border: "1px solid " + C.border }}>
-      <p className="text-xs mb-1" style={{ color: C.textMuted }}>अपनी details डालें, ताकि विक्रेता को सही जानकारी मिले</p>
+      <p className="text-xs mb-1" style={{ color: C.textMuted }}>अपनी details डालें, ताकि विक्रेता को सही जानकारी मिले (अगली बार अपने आप भर जाएंगी)</p>
       <input value={cName} onChange={(e) => setCName(e.target.value)} placeholder="आपका नाम"
         className="px-3 py-2 rounded-lg outline-none text-sm" style={{ background: C.bg, border: "1px solid " + C.border, color: C.textBody }} />
       <input value={cPhone} onChange={(e) => setCPhone(e.target.value)} placeholder="मोबाइल नंबर"
@@ -467,7 +485,7 @@ function WhatsAppOrder({ product }) {
         style={{ background: C.bg, border: "1px solid " + C.border, color: C.textBody }} />
       <input value={cPincode} onChange={(e) => setCPincode(e.target.value.replace(/\D/g, "").slice(0, 6))} placeholder="पिनकोड" inputMode="numeric"
         className="px-3 py-2 rounded-lg outline-none text-sm" style={{ background: C.bg, border: "1px solid " + C.border, color: C.textBody }} />
-      <a href={buildLink()} target="_blank" rel="noopener noreferrer"
+      <a href={buildLink()} target="_blank" rel="noopener noreferrer" onClick={saveDetails}
         className="flex items-center justify-center gap-2 px-5 py-3 rounded-xl font-medium text-sm mt-1"
         style={{ background: "#2BA84A", color: "#FFFFFF" }}>
         <MessageCircle className="w-4 h-4" /> WhatsApp पर भेजें
@@ -478,12 +496,36 @@ function WhatsAppOrder({ product }) {
 
 // ─── Product card & detail ────────────────────────────────────────────────────
 function ProductCard({ product, onOpen }) {
+  const [cardCopied, setCardCopied] = useState(false);
+
+  const handleCardShare = async (e) => {
+    e.stopPropagation();
+    const productUrl = window.location.origin + import.meta.env.BASE_URL + "?product=" + product.id;
+    const shareData = { title: product.name, text: product.name + " · ₹" + product.price, url: productUrl };
+    if (navigator.share) {
+      try { await navigator.share(shareData); } catch (err) { /* cancelled */ }
+    } else {
+      try {
+        await navigator.clipboard.writeText(productUrl);
+        setCardCopied(true);
+        setTimeout(() => setCardCopied(false), 1500);
+      } catch (err) {
+        alert("Link: " + productUrl);
+      }
+    }
+  };
+
   return (
     <button onClick={() => onOpen(product)}
-      className="text-left rounded-2xl overflow-hidden transition-transform hover:-translate-y-1"
+      className="text-left rounded-2xl overflow-hidden transition-transform hover:-translate-y-1 relative"
       style={{ background: C.card, border: "1px solid " + C.border }}>
-      <div className="aspect-square overflow-hidden">
+      <div className="aspect-square overflow-hidden relative">
         <img src={product.img} alt={product.name} className="w-full h-full object-cover" />
+        <div onClick={handleCardShare}
+          className="absolute top-2 right-2 p-1.5 rounded-full"
+          style={{ background: "rgba(0,0,0,0.45)" }}>
+          {cardCopied ? <Check className="w-3.5 h-3.5" style={{ color: "#FFFFFF" }} /> : <Share2 className="w-3.5 h-3.5" style={{ color: "#FFFFFF" }} />}
+        </div>
       </div>
       <div className="p-3">
         <p className="font-semibold text-[15px]" style={{ color: C.textHeading }}>{product.name}</p>
@@ -496,6 +538,39 @@ function ProductCard({ product, onOpen }) {
         </div>
       </div>
     </button>
+  );
+}
+
+function ImageCarousel({ images, alt }) {
+  const [idx, setIdx] = useState(0);
+  const list = images && images.length ? images : [];
+  if (list.length === 0) return null;
+
+  const prev = () => setIdx((i) => (i === 0 ? list.length - 1 : i - 1));
+  const next = () => setIdx((i) => (i === list.length - 1 ? 0 : i + 1));
+
+  return (
+    <div className="rounded-2xl overflow-hidden mb-4 max-w-md mx-auto relative" style={{ border: "1px solid " + C.border }}>
+      <img src={list[idx]} alt={alt} className="w-full aspect-square object-cover" />
+      {list.length > 1 && (
+        <>
+          <button onClick={prev} className="absolute left-2 top-1/2 -translate-y-1/2 p-2 rounded-full"
+            style={{ background: "rgba(0,0,0,0.4)" }}>
+            <ArrowLeft className="w-4 h-4" style={{ color: "#FFFFFF" }} />
+          </button>
+          <button onClick={next} className="absolute right-2 top-1/2 -translate-y-1/2 p-2 rounded-full rotate-180"
+            style={{ background: "rgba(0,0,0,0.4)" }}>
+            <ArrowLeft className="w-4 h-4" style={{ color: "#FFFFFF" }} />
+          </button>
+          <div className="absolute bottom-2 left-0 right-0 flex justify-center gap-1.5">
+            {list.map((_, i) => (
+              <button key={i} onClick={() => setIdx(i)} className="w-1.5 h-1.5 rounded-full"
+                style={{ background: i === idx ? "#FFFFFF" : "rgba(255,255,255,0.5)" }} />
+            ))}
+          </div>
+        </>
+      )}
+    </div>
   );
 }
 
@@ -541,9 +616,7 @@ function ProductDetail({ product, onBack, onChatWithVendor }) {
           {copied ? "✓ Link Copy हुआ" : (<><Share2 className="w-3.5 h-3.5" /> Share करें</>)}
         </button>
       </div>
-      <div className="rounded-2xl overflow-hidden mb-4 max-w-md mx-auto" style={{ border: "1px solid " + C.border }}>
-        <img src={product.img} alt={product.name} className="w-full aspect-square object-cover" />
-      </div>
+      <ImageCarousel images={product.images && product.images.length ? product.images : (product.img ? [product.img] : [])} alt={product.name} />
       <div className="max-w-md mx-auto">
         <h2 className="text-xl font-bold mb-1" style={{ color: C.textHeading, fontFamily: "Georgia, serif" }}>{product.name}</h2>
         <p className="text-sm flex items-center gap-1 mb-2" style={{ color: C.textMuted }}>
@@ -775,7 +848,8 @@ function PendingApprovalScreen({ onExit }) {
 }
 
 // ─── Vendor Panel ─────────────────────────────────────────────────────────────
-const emptyForm = { name: "", price: "", unit: "", category: "अचार", img: "", desc: "" };
+const emptyForm = { name: "", price: "", unit: "", category: "अचार", img: "", images: [], desc: "" };
+const MAX_PRODUCT_IMAGES = 4;
 
 function VendorPanel({ vendor, products, addProduct, updateProduct, removeProduct, ownerId, onExit, reloadVendor }) {
   const [editing, setEditing] = useState(null);
@@ -862,9 +936,19 @@ function VendorPanel({ vendor, products, addProduct, updateProduct, removeProduc
     setUploading(true);
     try {
       const url = await uploadToCloudinary(file);
-      setForm((f) => ({ ...f, img: url }));
+      setForm((f) => {
+        const nextImages = [...(f.images || []), url].slice(0, MAX_PRODUCT_IMAGES);
+        return { ...f, images: nextImages, img: nextImages[0] || url };
+      });
     } catch { alert("फोटो upload नहीं हो पाई, फिर से try करें।"); }
-    finally { setUploading(false); }
+    finally { setUploading(false); e.target.value = ""; }
+  };
+
+  const removeFormImage = (idx) => {
+    setForm((f) => {
+      const nextImages = (f.images || []).filter((_, i) => i !== idx);
+      return { ...f, images: nextImages, img: nextImages[0] || "" };
+    });
   };
 
   const saveUpi = async () => {
@@ -884,7 +968,7 @@ function VendorPanel({ vendor, products, addProduct, updateProduct, removeProduc
   };
 
   const startNew = () => { setForm(emptyForm); setEditing("new"); };
-  const startEdit = (p) => { setForm(p); setEditing(p.id); };
+  const startEdit = (p) => { setForm({ ...p, images: p.images && p.images.length ? p.images : (p.img ? [p.img] : []) }); setEditing(p.id); };
 
   const handleSave = async () => {
     if (!form.name || !form.price) return;
@@ -1063,12 +1147,26 @@ function VendorPanel({ vendor, products, addProduct, updateProduct, removeProduc
               className="px-4 py-2.5 rounded-xl outline-none text-sm" style={{ background: C.card, border: "1px solid " + C.border, color: C.textBody }} />
             <div>
               <label className="flex items-center justify-center gap-2 px-4 py-3 rounded-xl text-sm cursor-pointer"
-                style={{ background: C.accentSoft, color: C.accent, border: "1px dashed " + C.accent }}>
+                style={{ background: C.accentSoft, color: C.accent, border: "1px dashed " + C.accent, opacity: (form.images || []).length >= MAX_PRODUCT_IMAGES ? 0.5 : 1 }}>
                 {uploading ? <Loader2 className="w-4 h-4 animate-spin" /> : <Plus className="w-4 h-4" />}
-                {uploading ? "Upload हो रहा है..." : "गैलरी से फोटो चुनें"}
-                <input type="file" accept="image/*" onChange={handlePhotoSelect} className="hidden" disabled={uploading} />
+                {uploading ? "Upload हो रहा है..." : "गैलरी से फोटो चुनें (" + (form.images || []).length + "/" + MAX_PRODUCT_IMAGES + ")"}
+                <input type="file" accept="image/*" onChange={handlePhotoSelect} className="hidden" disabled={uploading || (form.images || []).length >= MAX_PRODUCT_IMAGES} />
               </label>
-              {form.img && <img src={form.img} alt="preview" className="w-20 h-20 rounded-lg object-cover mt-2" />}
+              <p className="text-[11px] mt-1" style={{ color: C.textMuted }}>पहली फोटो main image होगी। एक से ज़्यादा फोटो डालने पर customer को carousel दिखेगा।</p>
+              {(form.images || []).length > 0 && (
+                <div className="flex gap-2 mt-2 flex-wrap">
+                  {form.images.map((url, idx) => (
+                    <div key={idx} className="relative">
+                      <img src={url} alt={"preview " + idx} className="w-20 h-20 rounded-lg object-cover"
+                        style={idx === 0 ? { border: "2px solid " + C.accent } : { border: "1px solid " + C.border }} />
+                      <button onClick={() => removeFormImage(idx)}
+                        className="absolute -top-1.5 -right-1.5 rounded-full p-0.5" style={{ background: "#B83A2A" }}>
+                        <X className="w-3 h-3" style={{ color: "#FFFFFF" }} />
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              )}
             </div>
             <select value={form.category} onChange={(e) => setForm({ ...form, category: e.target.value })}
               className="px-4 py-2.5 rounded-xl outline-none text-sm" style={{ background: C.card, border: "1px solid " + C.border, color: C.textBody }}>
@@ -1401,6 +1499,23 @@ export default function ArtisanMarket() {
   const [pincodeQuery, setPincodeQuery] = useState("");
   const [authView, setAuthView] = useState(null);
   const [storeFilter, setStoreFilter] = useState(null); // shared "Share Store" link se aaya vendor uid
+  const [appCopied, setAppCopied] = useState(false);
+
+  const handleShareApp = async () => {
+    const siteUrl = window.location.origin + import.meta.env.BASE_URL;
+    const shareData = { title: "हमारी मिट्टी की दुकान", text: "आपके ज़िले के कारीगरों के असली, घर के बने प्रोडक्ट — देखिए और ऑर्डर करिए!", url: siteUrl };
+    if (navigator.share) {
+      try { await navigator.share(shareData); } catch (e) { /* cancelled */ }
+    } else {
+      try {
+        await navigator.clipboard.writeText(siteUrl);
+        setAppCopied(true);
+        setTimeout(() => setAppCopied(false), 2000);
+      } catch (e) {
+        alert("Link: " + siteUrl);
+      }
+    }
+  };
 
   const [activeChat, setActiveChat] = useState(null);
   const [pendingChatAction, setPendingChatAction] = useState(null);
@@ -1555,9 +1670,14 @@ export default function ArtisanMarket() {
             <p className="text-sm mb-0.5" style={{ color: "#F2E2D5" }}>आपके ज़िले के कारीगरों के असली, घर के बने प्रोडक्ट</p>
             <p className="text-xs" style={{ color: "rgba(242,226,213,0.75)" }}>एक पहल — Thrive Skills Educational Society · Powered by Hector365</p>
           </div>
-          <button onClick={() => setAuthView("login")} className="p-2 rounded-lg" style={{ background: "rgba(255,255,255,0.15)" }}>
-            <Lock className="w-4 h-4" style={{ color: "#FFFFFF" }} />
-          </button>
+          <div className="flex items-center gap-2">
+            <button onClick={handleShareApp} className="p-2 rounded-lg" style={{ background: "rgba(255,255,255,0.15)" }} title="Website Share करें">
+              {appCopied ? <Check className="w-4 h-4" style={{ color: "#FFFFFF" }} /> : <Share2 className="w-4 h-4" style={{ color: "#FFFFFF" }} />}
+            </button>
+            <button onClick={() => setAuthView("login")} className="p-2 rounded-lg" style={{ background: "rgba(255,255,255,0.15)" }}>
+              <Lock className="w-4 h-4" style={{ color: "#FFFFFF" }} />
+            </button>
+          </div>
         </div>
       </div>
 
