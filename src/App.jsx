@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef } from "react";
 import {
   MessageCircle, CreditCard, MapPin, ArrowLeft, ShoppingBasket, Search,
-  Lock, Plus, Pencil, Trash2, LogOut, Save, X, Loader2, UserPlus, Check, Clock, Shield, Send, Inbox,
+  Lock, Plus, Pencil, Trash2, LogOut, Save, X, Loader2, UserPlus, Check, Clock, Shield, Send, Inbox, Share2,
 } from "lucide-react";
 import { db, auth } from "./firebase.js";
 import {
@@ -17,6 +17,8 @@ const SUPER_ADMIN_EMAIL = "thrivesocietyofficial@gmail.com";
 const ADMIN_SENTINEL = "ADMIN"; // chats mein admin ko represent karne ke liye placeholder (real UID ki jagah)
 const SOCIETY_UPI_ID = "ayuvrajsingh901@ybl";
 const MONTHLY_FEE = 100;
+// ⚠️ Yahan society/admin ka asli WhatsApp number daalo (91 ke saath, bina + ya space)
+const SOCIETY_WHATSAPP = "918959992195";
 
 // ─── Payment Config ───────────────────────────────────────────────────────────
 // Sirf yahan "false" ko "true" karo jab paid plans start karni ho
@@ -425,6 +427,7 @@ function WhatsAppOrder({ product }) {
   const [cName, setCName] = useState("");
   const [cPhone, setCPhone] = useState("");
   const [cAddress, setCAddress] = useState("");
+  const [cPincode, setCPincode] = useState("");
 
   const cleanPhone = (product.sellerPhone || "").replace(/\D/g, "");
   const phoneForLink = cleanPhone.length === 10 ? "91" + cleanPhone : cleanPhone;
@@ -435,6 +438,7 @@ function WhatsAppOrder({ product }) {
       "मेरा नाम: " + (cName || "-"),
       "मोबाइल नंबर: " + (cPhone || "-"),
       "Address: " + (cAddress || "-"),
+      "पिनकोड: " + (cPincode || "-"),
     ];
     return "https://wa.me/" + phoneForLink + "?text=" + encodeURIComponent(lines.join("\n"));
   };
@@ -461,6 +465,8 @@ function WhatsAppOrder({ product }) {
       <textarea value={cAddress} onChange={(e) => setCAddress(e.target.value)} placeholder="पूरा Address (घर/गांव/लैंडमार्क)"
         rows={2} className="px-3 py-2 rounded-lg outline-none text-sm resize-none"
         style={{ background: C.bg, border: "1px solid " + C.border, color: C.textBody }} />
+      <input value={cPincode} onChange={(e) => setCPincode(e.target.value.replace(/\D/g, "").slice(0, 6))} placeholder="पिनकोड" inputMode="numeric"
+        className="px-3 py-2 rounded-lg outline-none text-sm" style={{ background: C.bg, border: "1px solid " + C.border, color: C.textBody }} />
       <a href={buildLink()} target="_blank" rel="noopener noreferrer"
         className="flex items-center justify-center gap-2 px-5 py-3 rounded-xl font-medium text-sm mt-1"
         style={{ background: "#2BA84A", color: "#FFFFFF" }}>
@@ -495,6 +501,7 @@ function ProductCard({ product, onOpen }) {
 
 function ProductDetail({ product, onBack, onChatWithVendor }) {
   const hasUpi = !!product.upiId;
+  const [copied, setCopied] = useState(false);
   const upiLink = hasUpi
     ? "upi://pay?pa=" + encodeURIComponent(product.upiId) +
       "&pn=" + encodeURIComponent(product.maker || "Vikreta") +
@@ -502,11 +509,38 @@ function ProductDetail({ product, onBack, onChatWithVendor }) {
       "&tn=" + encodeURIComponent(product.name)
     : null;
 
+  const productUrl = window.location.origin + import.meta.env.BASE_URL + "?product=" + product.id;
+
+  const handleShare = async () => {
+    const shareData = {
+      title: product.name,
+      text: product.name + " — " + (product.maker || "") + " · ₹" + product.price,
+      url: productUrl,
+    };
+    if (navigator.share) {
+      try { await navigator.share(shareData); } catch (e) { /* user cancelled, ignore */ }
+    } else {
+      try {
+        await navigator.clipboard.writeText(productUrl);
+        setCopied(true);
+        setTimeout(() => setCopied(false), 2000);
+      } catch (e) {
+        alert("Link: " + productUrl);
+      }
+    }
+  };
+
   return (
     <div className="px-4 py-5">
-      <button onClick={onBack} className="flex items-center gap-1.5 text-sm mb-4" style={{ color: C.accent }}>
-        <ArrowLeft className="w-4 h-4" /> वापस जाएं
-      </button>
+      <div className="flex items-center justify-between mb-4">
+        <button onClick={onBack} className="flex items-center gap-1.5 text-sm" style={{ color: C.accent }}>
+          <ArrowLeft className="w-4 h-4" /> वापस जाएं
+        </button>
+        <button onClick={handleShare} className="flex items-center gap-1.5 text-sm px-3 py-1.5 rounded-lg"
+          style={{ background: C.accentSoft, color: C.accent }}>
+          {copied ? "✓ Link Copy हुआ" : (<><Share2 className="w-3.5 h-3.5" /> Share करें</>)}
+        </button>
+      </div>
       <div className="rounded-2xl overflow-hidden mb-4 max-w-md mx-auto" style={{ border: "1px solid " + C.border }}>
         <img src={product.img} alt={product.name} className="w-full aspect-square object-cover" />
       </div>
@@ -753,7 +787,26 @@ function VendorPanel({ vendor, products, addProduct, updateProduct, removeProduc
   const [savingUpi, setSavingUpi] = useState(false);
   const [claimingPay, setClaimingPay] = useState(false);
   const [activeChat, setActiveChat] = useState(null);
+  const [storeCopied, setStoreCopied] = useState(false);
   const myChats = useUserChats(ownerId);
+
+  const storeUrl = window.location.origin + import.meta.env.BASE_URL + "?vendor=" + ownerId;
+  const promotionWaLink = "https://wa.me/" + SOCIETY_WHATSAPP + "?text=" +
+    encodeURIComponent("नमस्ते! मैं " + vendor.name + " हूं (" + vendor.village + ")। मुझे अपने products के लिए Facebook/Instagram Promotion Package के बारे में जानकारी चाहिए।");
+  const handleShareStore = async () => {
+    const shareData = { title: vendor.name + " की दुकान", text: "मिट्टी की दुकान पर " + vendor.name + " के products देखें", url: storeUrl };
+    if (navigator.share) {
+      try { await navigator.share(shareData); } catch (e) { /* cancelled */ }
+    } else {
+      try {
+        await navigator.clipboard.writeText(storeUrl);
+        setStoreCopied(true);
+        setTimeout(() => setStoreCopied(false), 2000);
+      } catch (e) {
+        alert("Link: " + storeUrl);
+      }
+    }
+  };
 
   const openChat = (chat, otherName) => setActiveChat({ chatId: chat.id, title: otherName, subtitle: chat.productName ? "बारे में: " + chat.productName : null });
 
@@ -839,9 +892,15 @@ function VendorPanel({ vendor, products, addProduct, updateProduct, removeProduc
             <p className="font-semibold" style={{ color: "#FFFFFF" }}>{vendor.name} का पैनल</p>
             <p className="text-[11px]" style={{ color: "rgba(242,226,213,0.8)" }}>{vendor.village} · {vendor.pincode}</p>
           </div>
-          <button onClick={onExit} className="flex items-center gap-1.5 text-sm" style={{ color: "#F2E2D5" }}>
-            <LogOut className="w-4 h-4" /> Logout
-          </button>
+          <div className="flex items-center gap-2">
+            <button onClick={handleShareStore} className="flex items-center gap-1.5 text-xs font-medium px-3 py-1.5 rounded-lg"
+              style={{ background: "rgba(255,255,255,0.15)", color: "#FFFFFF" }}>
+              <Share2 className="w-3.5 h-3.5" /> {storeCopied ? "✓ Copy हुआ" : "दुकान Share करें"}
+            </button>
+            <button onClick={onExit} className="flex items-center gap-1.5 text-sm" style={{ color: "#F2E2D5" }}>
+              <LogOut className="w-4 h-4" /> Logout
+            </button>
+          </div>
         </div>
       </div>
 
@@ -909,11 +968,16 @@ function VendorPanel({ vendor, products, addProduct, updateProduct, removeProduc
           ) : (
             <div className="flex items-start gap-2">
               <span className="text-lg">🎉</span>
-              <div>
-                <p className="text-sm font-semibold" style={{ color: "#226B2E" }}>Platform is currently FREE!</p>
-                <p className="text-xs mt-0.5" style={{ color: C.textBody }}>
-                  अभी platform पूरी तरह मुफ़्त है। भविष्य में paid plans आएंगे — पहले से registered vendors को अलग से सूचित किया जाएगा।
+              <div className="flex-1">
+                <p className="text-sm font-semibold" style={{ color: "#226B2E" }}>Mitti Ki Dukaan हमेशा FREE है!</p>
+                <p className="text-xs mt-0.5 mb-3" style={{ color: C.textBody }}>
+                  आपकी online दुकान बनाना और चलाना बिल्कुल मुफ़्त है। Mitti Ki Dukaan कोई commission नहीं लेती — सभी orders का payment सीधे आपके UPI account में जाता है।
                 </p>
+                <a href={promotionWaLink} target="_blank" rel="noopener noreferrer"
+                  className="flex items-center justify-center gap-2 px-4 py-2 rounded-lg text-xs font-medium"
+                  style={{ background: "#2BA84A", color: "#FFFFFF" }}>
+                  <MessageCircle className="w-3.5 h-3.5" /> Facebook/Instagram Promotion चाहिए? Contact करें
+                </a>
               </div>
             </div>
           )}
@@ -1316,6 +1380,7 @@ export default function ArtisanMarket() {
   const [query, setQuery] = useState("");
   const [pincodeQuery, setPincodeQuery] = useState("");
   const [authView, setAuthView] = useState(null);
+  const [storeFilter, setStoreFilter] = useState(null); // shared "Share Store" link se aaya vendor uid
 
   const [activeChat, setActiveChat] = useState(null);
   const [pendingChatAction, setPendingChatAction] = useState(null);
@@ -1384,9 +1449,25 @@ export default function ArtisanMarket() {
   );
 
   const allCategories = ["सभी", ...CATEGORIES];
+
+  // Shared link se aaya "?product=ID" ya "?vendor=UID" — products load hote hi apply karo
+  useEffect(() => {
+    if (loading || products.length === 0) return;
+    const params = new URLSearchParams(window.location.search);
+    const productId = params.get("product");
+    const vendorUid = params.get("vendor");
+    if (productId) {
+      const p = products.find((pr) => pr.id === productId);
+      if (p) setSelected(p);
+    } else if (vendorUid) {
+      setStoreFilter(vendorUid);
+    }
+  }, [loading, products]);
+
   const filtered = products.filter((p) =>
     (category === "सभी" || p.category === category) &&
     (!pincodeQuery || p.pincode === pincodeQuery) &&
+    (!storeFilter || p.ownerId === storeFilter) &&
     (!query || p.name?.includes(query) || p.maker?.includes(query) || p.village?.includes(query))
   );
 
@@ -1459,6 +1540,21 @@ export default function ArtisanMarket() {
           </button>
         </div>
       </div>
+
+      {/* Shared Store link se aaye ho to banner dikhao */}
+      {storeFilter && (
+        <div className="max-w-6xl mx-auto px-5 pt-4">
+          <div className="flex items-center justify-between gap-2 px-4 py-2.5 rounded-xl" style={{ background: C.accentSoft }}>
+            <p className="text-sm" style={{ color: C.accent }}>
+              आप एक विक्रेता की दुकान देख रहे हैं ({filtered.length} products)
+            </p>
+            <button onClick={() => { setStoreFilter(null); window.history.replaceState({}, "", window.location.pathname); }}
+              className="text-xs font-medium px-3 py-1 rounded-lg shrink-0" style={{ background: C.accent, color: "#FFFFFF" }}>
+              सभी Products देखें
+            </button>
+          </div>
+        </div>
+      )}
 
       {/* Search + Pincode */}
       <div className="max-w-6xl mx-auto px-5 py-4 flex gap-2">
