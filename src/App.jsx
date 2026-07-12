@@ -788,7 +788,24 @@ function VendorPanel({ vendor, products, addProduct, updateProduct, removeProduc
   const [claimingPay, setClaimingPay] = useState(false);
   const [activeChat, setActiveChat] = useState(null);
   const [storeCopied, setStoreCopied] = useState(false);
+  const [sharedProductId, setSharedProductId] = useState(null);
   const myChats = useUserChats(ownerId);
+
+  const handleShareProduct = async (p) => {
+    const productUrl = window.location.origin + import.meta.env.BASE_URL + "?product=" + p.id;
+    const shareData = { title: p.name, text: p.name + " — " + vendor.name + " · ₹" + p.price, url: productUrl };
+    if (navigator.share) {
+      try { await navigator.share(shareData); } catch (e) { /* cancelled */ }
+    } else {
+      try {
+        await navigator.clipboard.writeText(productUrl);
+        setSharedProductId(p.id);
+        setTimeout(() => setSharedProductId(null), 2000);
+      } catch (e) {
+        alert("Link: " + productUrl);
+      }
+    }
+  };
 
   const storeUrl = window.location.origin + import.meta.env.BASE_URL + "?vendor=" + ownerId;
   const promotionWaLink = "https://wa.me/" + SOCIETY_WHATSAPP + "?text=" +
@@ -1015,6 +1032,9 @@ function VendorPanel({ vendor, products, addProduct, updateProduct, removeProduc
                     <p className="font-medium text-sm" style={{ color: C.textHeading }}>{p.name}</p>
                     <p className="text-xs" style={{ color: C.textMuted }}>&#x20B9;{p.price}</p>
                   </div>
+                  <button onClick={() => handleShareProduct(p)} className="p-2 rounded-lg" style={{ background: "#DCF3DD", color: "#226B2E" }} title="Product Share करें">
+                    {sharedProductId === p.id ? <Check className="w-4 h-4" /> : <Share2 className="w-4 h-4" />}
+                  </button>
                   <button onClick={() => startEdit(p)} className="p-2 rounded-lg" style={{ background: C.accentSoft, color: C.accent }}>
                     <Pencil className="w-4 h-4" />
                   </button>
