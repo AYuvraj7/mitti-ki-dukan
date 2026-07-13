@@ -10,6 +10,7 @@ import {
 } from "firebase/firestore";
 import {
   signInWithEmailAndPassword, createUserWithEmailAndPassword, onAuthStateChanged, signOut,
+  signInWithPopup, GoogleAuthProvider,
 } from "firebase/auth";
 
 const SUPER_ADMIN_EMAIL = "thrivesocietyofficial@gmail.com";
@@ -262,27 +263,38 @@ function useAllOrders(enabled) {
   return orders;
 }
 
-// Customer ke "मेरे Orders" — koi login nahi hai, isliye localStorage mein saved IDs se
-// har order document ko live subscribe karte hain (real-time status update ke liye)
-function useMyOrders() {
+// Customer ke "मेरे Orders" — do tarike se orders milte hain:
+// 1) localStorage mein saved order IDs (guest/bina-login checkout)
+// 2) Firestore query by customerId (agar buyer Google se login hai — sabhi devices pe dikhega)
+function useMyOrders(buyerUid) {
   const [ids, setIds] = useState(() => {
     try { return (JSON.parse(localStorage.getItem("mkd_my_orders") || "[]")).map((o) => o.id); }
     catch { return []; }
   });
-  const [orders, setOrders] = useState({});
+  const [localOrders, setLocalOrders] = useState({});
+  const [linkedOrders, setLinkedOrders] = useState([]);
 
   useEffect(() => {
     const unsubs = ids.map((id) =>
       onSnapshot(doc(db, "orders", id), (snap) => {
-        if (snap.exists()) setOrders((prev) => ({ ...prev, [id]: { id: snap.id, ...snap.data() } }));
+        if (snap.exists()) setLocalOrders((prev) => ({ ...prev, [id]: { id: snap.id, ...snap.data() } }));
       })
     );
     return () => unsubs.forEach((u) => u());
   }, [ids.join(",")]);
 
-  const list = ids.map((id) => orders[id]).filter(Boolean)
-    .sort((a, b) => (b.createdAt?.toMillis?.() || 0) - (a.createdAt?.toMillis?.() || 0));
-  return list;
+  useEffect(() => {
+    if (!buyerUid) { setLinkedOrders([]); return; }
+    const q = query(collection(db, "orders"), where("customerId", "==", buyerUid));
+    const unsub = onSnapshot(q, (snap) => setLinkedOrders(snap.docs.map((d) => ({ id: d.id, ...d.data() }))));
+    return unsub;
+  }, [buyerUid]);
+
+  const merged = {};
+  ids.forEach((id) => { if (localOrders[id]) merged[id] = localOrders[id]; });
+  linkedOrders.forEach((o) => { merged[o.id] = o; });
+
+  return Object.values(merged).sort((a, b) => (b.createdAt?.toMillis?.() || 0) - (a.createdAt?.toMillis?.() || 0));
 }
 
 // ─── WhatsApp order form ──────────────────────────────────────────────────────
@@ -326,6 +338,8 @@ function OrderNow({ product }) {
         setCPhone(saved.phone || "");
         setCAddress(saved.address || "");
         setCPincode(saved.pincode || "");
+      } else if (auth.currentUser && !auth.currentUser.isAnonymous && auth.currentUser.displayName) {
+        setCName(auth.currentUser.displayName);
       }
     } catch {}
   }, []);
@@ -366,6 +380,7 @@ function OrderNow({ product }) {
     customerPhone: cPhone.trim(),
     customerAddress: cAddress.trim(),
     customerPincode: cPincode.trim(),
+    customerId: (auth.currentUser && !auth.currentUser.isAnonymous) ? auth.currentUser.uid : null,
   });
 
   const placeCodOrder = async () => {
@@ -1606,8 +1621,15 @@ function SuperAdminPanel({ vendors, reloadVendors, products, removeProduct, onEx
   );
 }
 
-function MyOrdersModal({ onClose }) {
-  const orders = useMyOrders();
+function MyOrdersModal({ onClose, buyerUser }) {
+  const orders = useMyOrders(buyerUser && !buyerUser.isAnonymous ? buyerUser.uid : null);
+  const isBuyerLoggedIn = buyerUser && !buyerUser.isAnonymous;
+
+  const handleGoogleLogin = async () => {
+    try { await signInWithPopup(auth, new GoogleAuthProvider()); }
+    catch (e) { if (e.code !== "auth/popup-closed-by-user") alert("Login नहीं हो पाया: " + e.message); }
+  };
+
   return (
     <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center" style={{ background: "rgba(0,0,0,0.4)" }}>
       <div className="w-full sm:max-w-md h-[85vh] sm:h-[600px] rounded-t-2xl sm:rounded-2xl flex flex-col overflow-hidden" style={{ background: C.bg }}>
@@ -1615,6 +1637,23 @@ function MyOrdersModal({ onClose }) {
           <p className="font-semibold text-sm" style={{ color: "#FFFFFF" }}>मेरे Orders</p>
           <button onClick={onClose}><X className="w-5 h-5" style={{ color: "#FFFFFF" }} /></button>
         </div>
+
+        {/* Buyer login banner — sabhi devices pe orders dekhne ke liye (free, Google se) */}
+        <div className="px-4 pt-3 shrink-0">
+          {isBuyerLoggedIn ? (
+            <div className="flex items-center justify-between gap-2 px-3 py-2 rounded-xl mb-2" style={{ background: "#DCF3DD" }}>
+              <p className="text-xs" style={{ color: "#226B2E" }}>✓ {buyerUser.displayName || buyerUser.email} से लॉगिन है — orders सभी devices पर दिखेंगे</p>
+              <button onClick={() => signOut(auth)} className="text-xs font-medium shrink-0" style={{ color: "#226B2E" }}>Logout</button>
+            </div>
+          ) : (
+            <button onClick={handleGoogleLogin}
+              className="w-full flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl text-sm font-medium mb-2"
+              style={{ background: C.card, border: "1px solid " + C.border, color: C.textBody }}>
+              Google से Login करें (सभी devices पर orders देखने के लिए)
+            </button>
+          )}
+        </div>
+
         <div className="flex-1 overflow-y-auto px-4 py-3 flex flex-col gap-3">
           {orders.length === 0 && (
             <p className="text-sm text-center mt-8" style={{ color: C.textMuted }}>अभी कोई order नहीं है। कोई product order करने पर वो यहां दिखेगा।</p>
@@ -1630,6 +1669,12 @@ function MyOrdersModal({ onClose }) {
               </p>
               {o.paymentMethod === "upi" && (
                 <p className="text-xs mt-1" style={{ color: C.textMuted }}>Payment: {o.paymentStatus === "paid" ? "✓ Paid" : "Verification Pending"}</p>
+              )}
+              {o.sellerPhone && (
+                <a href={"https://wa.me/91" + o.sellerPhone.replace(/\D/g, "")} target="_blank" rel="noopener noreferrer"
+                  className="inline-flex items-center gap-1 mt-2 text-xs px-2 py-1 rounded" style={{ background: "#DCF3DD", color: "#226B2E" }}>
+                  <MessageCircle className="w-3 h-3" /> विक्रेता से मदद के लिए Chat करें
+                </a>
               )}
             </div>
           ))}
@@ -1718,7 +1763,11 @@ export default function ArtisanMarket() {
     return <SuperAdminPanel vendors={vendors} reloadVendors={reloadVendors} products={products} removeProduct={removeProduct} onExit={() => signOut(auth)} adminUid={user.uid} />;
   }
 
-  if (user && !user.isAnonymous && !vendorLoading) {
+  // Google se login kiya hua buyer bhi "user" state mein aata hai — usko vendor-check
+  // se exclude karna zaroori hai, warna use galti se "Registration Pending" screen dikh jaata
+  const isGoogleBuyer = user?.providerData?.some((p) => p.providerId === "google.com");
+
+  if (user && !user.isAnonymous && !isGoogleBuyer && !vendorLoading) {
     if (!vendor || vendor.status === "pending") return <PendingApprovalScreen onExit={() => signOut(auth)} />;
     if (vendor.status === "rejected") {
       return (
@@ -1827,7 +1876,7 @@ export default function ArtisanMarket() {
         <ShoppingBasket className="w-4 h-4" /> <span className="text-sm font-medium">मेरे Orders</span>
       </button>
 
-      {showMyOrders && <MyOrdersModal onClose={() => setShowMyOrders(false)} />}
+      {showMyOrders && <MyOrdersModal onClose={() => setShowMyOrders(false)} buyerUser={user} />}
     </div>
   );
 }
