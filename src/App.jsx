@@ -1,20 +1,18 @@
 import { useState, useEffect, useRef } from "react";
 import {
   MessageCircle, CreditCard, MapPin, ArrowLeft, ShoppingBasket, Search,
-  Lock, Plus, Pencil, Trash2, LogOut, Save, X, Loader2, UserPlus, Check, Clock, Shield, Send, Inbox, Share2,
+  Lock, Plus, Pencil, Trash2, LogOut, Save, X, Loader2, UserPlus, Check, Clock, Shield, Share2,
 } from "lucide-react";
 import { db, auth } from "./firebase.js";
 import {
   collection, getDocs, addDoc, updateDoc, deleteDoc, doc, getDoc, setDoc,
-  onSnapshot, query, orderBy, where, serverTimestamp,
+  onSnapshot, query, where, serverTimestamp,
 } from "firebase/firestore";
 import {
   signInWithEmailAndPassword, createUserWithEmailAndPassword, onAuthStateChanged, signOut,
-  signInAnonymously,
 } from "firebase/auth";
 
 const SUPER_ADMIN_EMAIL = "thrivesocietyofficial@gmail.com";
-const ADMIN_SENTINEL = "ADMIN"; // chats mein admin ko represent karne ke liye placeholder (real UID ki jagah)
 const SOCIETY_UPI_ID = "ayuvrajsingh901@ybl";
 const MONTHLY_FEE = 100;
 // ⚠️ Yahan society/admin ka asli WhatsApp number daalo (91 ke saath, bina + ya space)
@@ -182,252 +180,143 @@ function useAuthUser() {
   return { user, authLoading };
 }
 
-// ─── Chat system (Customer ↔ Vendor ↔ Admin) ──────────────────────────────────
-async function ensureAnonymousAuth() {
-  if (auth.currentUser) return auth.currentUser;
-  const cred = await signInAnonymously(auth);
-  return cred.user;
+// ─── Order system ──────────────────────────────────────────────────────────────
+// Order status flow:
+//  COD:  pending -> accepted -> packed -> out_for_delivery -> delivered  (या rejected/cancelled kabhi bhi)
+//  UPI:  payment_pending -> pending (seller verify karne ke baad) -> ...same as COD
+const ORDER_STATUS_META = {
+  payment_pending: { label: "Payment Verification Pending", bg: "#FCEFC7", fg: "#8A6A00" },
+  pending: { label: "Pending", bg: "#FCEFC7", fg: "#8A6A00" },
+  accepted: { label: "Accepted", bg: "#E4E8FB", fg: "#33429E" },
+  packed: { label: "Packed", bg: "#E4E8FB", fg: "#33429E" },
+  out_for_delivery: { label: "Out for Delivery", bg: "#E4E8FB", fg: "#33429E" },
+  delivered: { label: "Delivered", bg: "#DCF3DD", fg: "#226B2E" },
+  rejected: { label: "Rejected", bg: "#FBE2DD", fg: "#B83A2A" },
+  cancelled: { label: "Cancelled", bg: "#FBE2DD", fg: "#B83A2A" },
+};
+
+function OrderStatusBadge({ status }) {
+  const meta = ORDER_STATUS_META[status] || { label: status, bg: "#EEE", fg: "#555" };
+  return (
+    <span className="text-[11px] font-semibold px-2 py-1 rounded-full" style={{ background: meta.bg, color: meta.fg }}>
+      {meta.label}
+    </span>
+  );
 }
 
-async function ensureChat(chatId, data) {
-  const ref = doc(db, "chats", chatId);
-  const snap = await getDoc(ref);
-  if (!snap.exists()) {
-    await setDoc(ref, {
-      ...data,
-      lastMessage: "",
-      lastMessageAt: serverTimestamp(),
-      createdAt: serverTimestamp(),
-    });
-  }
-  return chatId;
+const ORDER_TABS = [
+  { key: "payment_pending", label: "Payment Pending" },
+  { key: "pending", label: "Pending" },
+  { key: "accepted", label: "Accepted" },
+  { key: "packed", label: "Packed" },
+  { key: "out_for_delivery", label: "Out for Delivery" },
+  { key: "delivered", label: "Delivered" },
+  { key: "cancelled_rejected", label: "Cancelled/Rejected" },
+];
+
+async function placeOrder(orderData) {
+  const ref = await addDoc(collection(db, "orders"), {
+    ...orderData,
+    createdAt: serverTimestamp(),
+  });
+  // customer ke device par order ID yaad rakho — "मेरे Orders" page ke liye (koi login nahi chahिए)
+  try {
+    const list = JSON.parse(localStorage.getItem("mkd_my_orders") || "[]");
+    list.unshift({ id: ref.id, productName: orderData.productName, date: new Date().toISOString() });
+    localStorage.setItem("mkd_my_orders", JSON.stringify(list.slice(0, 50)));
+  } catch {}
+  return ref.id;
 }
 
-async function sendChatMessage(chatId, msg) {
-  await addDoc(collection(db, "chats", chatId, "messages"), { ...msg, createdAt: serverTimestamp() });
-  await updateDoc(doc(db, "chats", chatId), { lastMessage: msg.text, lastMessageAt: serverTimestamp() });
+async function updateOrderStatus(orderId, fields) {
+  await updateDoc(doc(db, "orders", orderId), fields);
 }
 
-async function deleteChatMessage(chatId, messageId) {
-  await deleteDoc(doc(db, "chats", chatId, "messages", messageId));
-}
-
-async function deleteEntireChat(chatId) {
-  const snap = await getDocs(collection(db, "chats", chatId, "messages"));
-  for (const d of snap.docs) {
-    await deleteDoc(doc(db, "chats", chatId, "messages", d.id));
-  }
-  await deleteDoc(doc(db, "chats", chatId));
-}
-
-function useChatMessages(chatId) {
-  const [messages, setMessages] = useState([]);
+function useSellerOrders(ownerId) {
+  const [orders, setOrders] = useState([]);
   useEffect(() => {
-    if (!chatId) { setMessages([]); return; }
-    const q = query(collection(db, "chats", chatId, "messages"), orderBy("createdAt", "asc"));
-    const unsub = onSnapshot(q, (snap) => setMessages(snap.docs.map((d) => ({ id: d.id, ...d.data() }))));
-    return unsub;
-  }, [chatId]);
-  return messages;
-}
-
-// Diye gaye uid ko participants array mein rakhne wale sabhi chats (jaise sirf vendor ke liye, ya sirf customer ke liye)
-function useUserChats(uid) {
-  const [chats, setChats] = useState([]);
-  useEffect(() => {
-    if (!uid) { setChats([]); return; }
-    const q = query(collection(db, "chats"), where("participants", "array-contains", uid));
+    if (!ownerId) { setOrders([]); return; }
+    const q = query(collection(db, "orders"), where("ownerId", "==", ownerId));
     const unsub = onSnapshot(q, (snap) => {
       const list = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
-      list.sort((a, b) => (b.lastMessageAt?.toMillis?.() || 0) - (a.lastMessageAt?.toMillis?.() || 0));
-      setChats(list);
+      list.sort((a, b) => (b.createdAt?.toMillis?.() || 0) - (a.createdAt?.toMillis?.() || 0));
+      setOrders(list);
     });
     return unsub;
-  }, [uid]);
-  return chats;
+  }, [ownerId]);
+  return orders;
 }
 
-// Admin ke saare chats (jin sabme ADMIN_SENTINEL participant hai)
-function useAdminChats(enabled) {
-  const [chats, setChats] = useState([]);
+// Admin ke liye — poore platform ke saare orders (sabhi vendors ke)
+function useAllOrders(enabled) {
+  const [orders, setOrders] = useState([]);
   useEffect(() => {
-    if (!enabled) { setChats([]); return; }
-    const q = query(collection(db, "chats"), where("participants", "array-contains", ADMIN_SENTINEL));
-    const unsub = onSnapshot(q, (snap) => {
+    if (!enabled) { setOrders([]); return; }
+    const unsub = onSnapshot(collection(db, "orders"), (snap) => {
       const list = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
-      list.sort((a, b) => (b.lastMessageAt?.toMillis?.() || 0) - (a.lastMessageAt?.toMillis?.() || 0));
-      setChats(list);
+      list.sort((a, b) => (b.createdAt?.toMillis?.() || 0) - (a.createdAt?.toMillis?.() || 0));
+      setOrders(list);
     });
     return unsub;
   }, [enabled]);
-  return chats;
+  return orders;
 }
 
-function timeAgo(ts) {
-  const ms = ts?.toMillis ? ts.toMillis() : (ts ? new Date(ts).getTime() : null);
-  if (!ms) return "";
-  const mins = Math.floor((Date.now() - ms) / 60000);
-  if (mins < 1) return "अभी";
-  if (mins < 60) return mins + " मिनट पहले";
-  const hrs = Math.floor(mins / 60);
-  if (hrs < 24) return hrs + " घंटे पहले";
-  return Math.floor(hrs / 24) + " दिन पहले";
-}
+// Customer ke "मेरे Orders" — koi login nahi hai, isliye localStorage mein saved IDs se
+// har order document ko live subscribe karte hain (real-time status update ke liye)
+function useMyOrders() {
+  const [ids, setIds] = useState(() => {
+    try { return (JSON.parse(localStorage.getItem("mkd_my_orders") || "[]")).map((o) => o.id); }
+    catch { return []; }
+  });
+  const [orders, setOrders] = useState({});
 
-// Chat conversation window — message list + input box
-function ChatThread({ chatId, currentUid, currentName, currentRole, title, subtitle, onClose }) {
-  const messages = useChatMessages(chatId);
-  const [text, setText] = useState("");
-  const [sending, setSending] = useState(false);
-  const endRef = useRef(null);
+  useEffect(() => {
+    const unsubs = ids.map((id) =>
+      onSnapshot(doc(db, "orders", id), (snap) => {
+        if (snap.exists()) setOrders((prev) => ({ ...prev, [id]: { id: snap.id, ...snap.data() } }));
+      })
+    );
+    return () => unsubs.forEach((u) => u());
+  }, [ids.join(",")]);
 
-  useEffect(() => { endRef.current?.scrollIntoView({ behavior: "smooth" }); }, [messages.length]);
-
-  const handleSend = async () => {
-    const t = text.trim();
-    if (!t || sending) return;
-    setSending(true);
-    setText("");
-    try {
-      await sendChatMessage(chatId, { senderId: currentUid, senderName: currentName, senderRole: currentRole, text: t });
-    } catch (e) {
-      alert("Message नहीं भेजा जा सका — Firestore rules check करें। Error: " + e.message);
-      setText(t);
-    } finally { setSending(false); }
-  };
-
-  const handleDeleteChat = async () => {
-    if (!confirm("पूरी बातचीत हमेशा के लिए डिलीट करें? यह वापस नहीं आएगी।")) return;
-    try {
-      await deleteEntireChat(chatId);
-      onClose();
-    } catch (e) {
-      alert("Chat डिलीट नहीं हो पाई: " + e.message);
-    }
-  };
-
-  return (
-    <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center" style={{ background: "rgba(0,0,0,0.4)" }}>
-      <div className="w-full sm:max-w-md h-[85vh] sm:h-[600px] rounded-t-2xl sm:rounded-2xl flex flex-col overflow-hidden" style={{ background: C.bg }}>
-        <div className="px-4 py-3 flex items-center justify-between shrink-0" style={{ background: C.accent }}>
-          <div className="min-w-0">
-            <p className="font-semibold text-sm truncate" style={{ color: "#FFFFFF" }}>{title}</p>
-            {subtitle && <p className="text-xs truncate" style={{ color: "#F2E2D5" }}>{subtitle}</p>}
-          </div>
-          <div className="flex items-center gap-1 shrink-0">
-            <button onClick={handleDeleteChat} title="पूरी बातचीत डिलीट करें" className="p-1.5 rounded-full">
-              <Trash2 className="w-4 h-4" style={{ color: "#F2E2D5" }} />
-            </button>
-            <button onClick={onClose} className="p-1.5 ml-1"><X className="w-5 h-5" style={{ color: "#FFFFFF" }} /></button>
-          </div>
-        </div>
-
-        <div className="flex-1 overflow-y-auto px-4 py-3 flex flex-col gap-2">
-          {messages.length === 0 && (
-            <p className="text-xs text-center mt-6" style={{ color: C.textMuted }}>अभी कोई message नहीं। बात शुरू करें!</p>
-          )}
-          {messages.map((m) => {
-            const mine = m.senderId === currentUid;
-            const handleDelete = async () => {
-              if (!confirm("यह message डिलीट करें?")) return;
-              try { await deleteChatMessage(chatId, m.id); }
-              catch (e) { alert("Delete नहीं हो पाया: " + e.message); }
-            };
-            return (
-              <div key={m.id} className={"group flex items-end gap-1.5 max-w-[75%] " + (mine ? "self-end flex-row-reverse" : "self-start")}>
-                <div className="px-3 py-2 rounded-xl text-sm"
-                  style={mine ? { background: C.accent, color: "#FFFFFF" } : { background: C.card, color: C.textBody, border: "1px solid " + C.border }}>
-                  {!mine && <p className="text-[10px] font-semibold mb-0.5" style={{ color: C.accent }}>{m.senderName}</p>}
-                  <p className="whitespace-pre-wrap break-words">{m.text}</p>
-                </div>
-                {mine && (
-                  <button onClick={handleDelete}
-                    className="shrink-0 p-1.5 rounded-full"
-                    style={{ color: "#B83A2A", background: "#FBE2DD" }} title="Message डिलीट करें">
-                    <Trash2 className="w-3.5 h-3.5" />
-                  </button>
-                )}
-              </div>
-            );
-          })}
-          <div ref={endRef} />
-        </div>
-
-        <div className="flex items-center gap-2 px-3 py-3 shrink-0" style={{ borderTop: "1px solid " + C.border, background: C.card }}>
-          <input value={text} onChange={(e) => setText(e.target.value)}
-            onKeyDown={(e) => { if (e.key === "Enter") handleSend(); }}
-            placeholder="Message लिखें..." className="flex-1 px-3 py-2 rounded-xl outline-none text-sm"
-            style={{ background: C.bg, border: "1px solid " + C.border, color: C.textBody }} />
-          <button onClick={handleSend} disabled={sending || !text.trim()}
-            className="p-2.5 rounded-xl disabled:opacity-50 shrink-0" style={{ background: C.accent, color: "#FFFFFF" }}>
-            {sending ? <Loader2 className="w-4 h-4 animate-spin" /> : <Send className="w-4 h-4" />}
-          </button>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-// Chats ki list (vendor/admin inbox ke liye) — click karke thread khulta hai
-function ChatInbox({ chats, currentUid, onOpen, emptyText }) {
-  return (
-    <div className="flex flex-col gap-2">
-      {chats.map((c) => {
-        const names = c.participantNames || {};
-        const otherEntry = Object.entries(names).find(([uid]) => uid !== currentUid && uid !== ADMIN_SENTINEL);
-        const otherName = otherEntry ? otherEntry[1] : (c.participants?.includes(ADMIN_SENTINEL) ? "Admin / Support" : "User");
-        return (
-          <button key={c.id} onClick={() => onOpen(c, otherName)}
-            className="text-left p-3 rounded-xl flex items-center justify-between gap-3"
-            style={{ background: C.card, border: "1px solid " + C.border }}>
-            <div className="min-w-0 flex-1">
-              <p className="font-medium text-sm truncate" style={{ color: C.textHeading }}>{otherName}</p>
-              {c.productName && <p className="text-xs truncate" style={{ color: C.textMuted }}>बारे में: {c.productName}</p>}
-              <p className="text-xs truncate mt-0.5" style={{ color: C.textMuted }}>{c.lastMessage || "कोई message नहीं"}</p>
-            </div>
-            <div className="flex flex-col items-end gap-1 shrink-0">
-              <MessageCircle className="w-4 h-4" style={{ color: C.accent }} />
-              <span className="text-[10px]" style={{ color: C.textMuted }}>{timeAgo(c.lastMessageAt)}</span>
-            </div>
-          </button>
-        );
-      })}
-      {chats.length === 0 && <p className="text-sm" style={{ color: C.textMuted }}>{emptyText}</p>}
-    </div>
-  );
-}
-
-// Pehli baar chat karne se pehle customer ka naam le lete hain (login nahi chahiye)
-function NamePrompt({ onSubmit, onCancel }) {
-  const [name, setName] = useState("");
-  return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center px-5" style={{ background: "rgba(0,0,0,0.4)" }}>
-      <div className="w-full max-w-sm p-5 rounded-2xl" style={{ background: C.card }}>
-        <p className="font-semibold text-sm mb-3" style={{ color: C.textHeading }}>Chat शुरू करने के लिए अपना नाम बताएं</p>
-        <input value={name} onChange={(e) => setName(e.target.value)}
-          onKeyDown={(e) => { if (e.key === "Enter" && name.trim()) onSubmit(name.trim()); }}
-          placeholder="आपका नाम" autoFocus
-          className="w-full px-4 py-2.5 rounded-xl outline-none text-sm mb-3"
-          style={{ background: C.bg, border: "1px solid " + C.border, color: C.textBody }} />
-        <div className="flex gap-2">
-          <button onClick={() => name.trim() && onSubmit(name.trim())} disabled={!name.trim()}
-            className="flex-1 px-4 py-2.5 rounded-xl text-sm font-medium disabled:opacity-50"
-            style={{ background: C.accent, color: "#FFFFFF" }}>Chat शुरू करें</button>
-          <button onClick={onCancel} className="px-4 py-2.5 rounded-xl text-sm"
-            style={{ background: C.bg, border: "1px solid " + C.border, color: C.textBody }}>Cancel</button>
-        </div>
-      </div>
-    </div>
-  );
+  const list = ids.map((id) => orders[id]).filter(Boolean)
+    .sort((a, b) => (b.createdAt?.toMillis?.() || 0) - (a.createdAt?.toMillis?.() || 0));
+  return list;
 }
 
 // ─── WhatsApp order form ──────────────────────────────────────────────────────
-function WhatsAppOrder({ product }) {
-  const [showForm, setShowForm] = useState(false);
+// Ab yeh sirf communication ke liye hai — order nahi lagta, seedha WhatsApp khulta hai
+function ChatWithSellerLink({ product }) {
+  const cleanPhone = (product.sellerPhone || "").replace(/\D/g, "");
+  const phoneForLink = cleanPhone.length === 10 ? "91" + cleanPhone : cleanPhone;
+  const link = "https://wa.me/" + phoneForLink + "?text=" +
+    encodeURIComponent("नमस्ते! मुझे \"" + product.name + "\" के बारे में जानकारी चाहिए।");
+
+  if (!cleanPhone) return null;
+
+  return (
+    <a href={link} target="_blank" rel="noopener noreferrer"
+      className="flex items-center justify-center gap-2 px-5 py-3 rounded-xl font-medium text-sm w-full"
+      style={{ background: C.card, border: "1px solid " + C.border, color: C.textBody }}>
+      <MessageCircle className="w-4 h-4" style={{ color: "#2BA84A" }} /> Chat with Seller on WhatsApp
+    </a>
+  );
+}
+
+// ─── Order Now — poora marketplace order + payment flow ───────────────────────
+function OrderNow({ product }) {
+  const [stage, setStage] = useState("closed"); // closed -> form -> upiPayment -> done
   const [cName, setCName] = useState("");
   const [cPhone, setCPhone] = useState("");
   const [cAddress, setCAddress] = useState("");
   const [cPincode, setCPincode] = useState("");
+  const [qty, setQty] = useState(1);
+  const [payMethod, setPayMethod] = useState("cod"); // "cod" | "upi"
+  const [utr, setUtr] = useState("");
+  const [placing, setPlacing] = useState(false);
+  const [upiCopied, setUpiCopied] = useState(false);
+  const [placedOrderId, setPlacedOrderId] = useState(null);
 
   useEffect(() => {
     try {
@@ -447,51 +336,184 @@ function WhatsAppOrder({ product }) {
     } catch {}
   };
 
-  const cleanPhone = (product.sellerPhone || "").replace(/\D/g, "");
-  const phoneForLink = cleanPhone.length === 10 ? "91" + cleanPhone : cleanPhone;
+  const detailsValid = cName.trim() && cPhone.trim().length >= 10 && cAddress.trim() && cPincode.trim().length === 6;
+  const amount = (Number(product.price) || 0) * qty;
+  const upiLink = product.upiId
+    ? "upi://pay?pa=" + encodeURIComponent(product.upiId) + "&pn=" + encodeURIComponent(product.maker || "Vikreta") +
+      "&am=" + amount + "&cu=INR" + "&tn=" + encodeURIComponent(product.name)
+    : null;
 
-  const buildLink = () => {
-    const lines = [
-      "नमस्ते! मुझे \"" + product.name + "\" (" + product.unit + ") ऑर्डर करना है, कीमत " + product.price + ".",
-      "मेरा नाम: " + (cName || "-"),
-      "मोबाइल नंबर: " + (cPhone || "-"),
-      "Address: " + (cAddress || "-"),
-      "पिनकोड: " + (cPincode || "-"),
-    ];
-    return "https://wa.me/" + phoneForLink + "?text=" + encodeURIComponent(lines.join("\n"));
+  const copyUpiId = async () => {
+    try {
+      await navigator.clipboard.writeText(product.upiId);
+      setUpiCopied(true);
+      setTimeout(() => setUpiCopied(false), 2000);
+    } catch { alert("UPI ID: " + product.upiId); }
   };
 
-  if (!showForm) {
+  const baseOrderData = () => ({
+    productId: product.id,
+    productName: product.name,
+    productImg: product.img || (product.images && product.images[0]) || "",
+    price: Number(product.price) || 0,
+    quantity: qty,
+    amount,
+    unit: product.unit,
+    ownerId: product.ownerId,
+    sellerName: product.maker || "",
+    sellerPhone: product.sellerPhone || "",
+    customerName: cName.trim(),
+    customerPhone: cPhone.trim(),
+    customerAddress: cAddress.trim(),
+    customerPincode: cPincode.trim(),
+  });
+
+  const placeCodOrder = async () => {
+    if (!detailsValid) { alert("कृपया सभी details सही से भरें (पिनकोड 6 अंकों का होना चाहिए)।"); return; }
+    setPlacing(true);
+    try {
+      saveDetails();
+      const id = await placeOrder({
+        ...baseOrderData(),
+        paymentMethod: "cod",
+        paymentStatus: "cod",
+        status: "pending",
+      });
+      setPlacedOrderId(id);
+      setStage("done");
+    } catch (e) {
+      alert("Order place नहीं हो पाया: " + e.message);
+    } finally { setPlacing(false); }
+  };
+
+  const placeUpiOrder = async () => {
+    if (!utr.trim()) { alert("कृपया Transaction ID (UTR) डालें, payment करने के बाद।"); return; }
+    setPlacing(true);
+    try {
+      const id = await placeOrder({
+        ...baseOrderData(),
+        paymentMethod: "upi",
+        paymentStatus: "pending_verification",
+        utr: utr.trim(),
+        status: "payment_pending",
+      });
+      setPlacedOrderId(id);
+      setStage("done");
+    } catch (e) {
+      alert("Order place नहीं हो पाया: " + e.message);
+    } finally { setPlacing(false); }
+  };
+
+  if (stage === "closed") {
     return (
-      <button
-        onClick={() => setShowForm(true)}
-        className="flex items-center justify-center gap-2 px-5 py-3 rounded-xl font-medium text-sm w-full"
-        style={{ background: "#2BA84A", color: "#FFFFFF" }}
-      >
-        <MessageCircle className="w-4 h-4" /> WhatsApp पर Order करें
+      <button onClick={() => setStage("form")}
+        className="flex items-center justify-center gap-2 px-5 py-3 rounded-xl font-semibold text-sm w-full"
+        style={{ background: C.accent, color: "#FFFFFF" }}>
+        <ShoppingBasket className="w-4 h-4" /> Order Now
       </button>
     );
   }
 
-  return (
-    <div className="p-4 rounded-xl flex flex-col gap-2" style={{ background: C.card, border: "1px solid " + C.border }}>
-      <p className="text-xs mb-1" style={{ color: C.textMuted }}>अपनी details डालें, ताकि विक्रेता को सही जानकारी मिले (अगली बार अपने आप भर जाएंगी)</p>
-      <input value={cName} onChange={(e) => setCName(e.target.value)} placeholder="आपका नाम"
-        className="px-3 py-2 rounded-lg outline-none text-sm" style={{ background: C.bg, border: "1px solid " + C.border, color: C.textBody }} />
-      <input value={cPhone} onChange={(e) => setCPhone(e.target.value)} placeholder="मोबाइल नंबर"
-        className="px-3 py-2 rounded-lg outline-none text-sm" style={{ background: C.bg, border: "1px solid " + C.border, color: C.textBody }} />
-      <textarea value={cAddress} onChange={(e) => setCAddress(e.target.value)} placeholder="पूरा Address (घर/गांव/लैंडमार्क)"
-        rows={2} className="px-3 py-2 rounded-lg outline-none text-sm resize-none"
-        style={{ background: C.bg, border: "1px solid " + C.border, color: C.textBody }} />
-      <input value={cPincode} onChange={(e) => setCPincode(e.target.value.replace(/\D/g, "").slice(0, 6))} placeholder="पिनकोड" inputMode="numeric"
-        className="px-3 py-2 rounded-lg outline-none text-sm" style={{ background: C.bg, border: "1px solid " + C.border, color: C.textBody }} />
-      <a href={buildLink()} target="_blank" rel="noopener noreferrer" onClick={saveDetails}
-        className="flex items-center justify-center gap-2 px-5 py-3 rounded-xl font-medium text-sm mt-1"
-        style={{ background: "#2BA84A", color: "#FFFFFF" }}>
-        <MessageCircle className="w-4 h-4" /> WhatsApp पर भेजें
-      </a>
-    </div>
-  );
+  if (stage === "done") {
+    return (
+      <div className="p-5 rounded-xl flex flex-col items-center text-center gap-2" style={{ background: "#DCF3DD", border: "1px solid #226B2E" }}>
+        <Check className="w-8 h-8" style={{ color: "#226B2E" }} />
+        <p className="font-semibold text-sm" style={{ color: "#226B2E" }}>
+          {payMethod === "upi" ? "Order भेज दिया गया — Payment Verification Pending" : "Order सफलतापूर्वक Place हो गया!"}
+        </p>
+        <p className="text-xs" style={{ color: C.textBody }}>Order ID: {placedOrderId}</p>
+        <p className="text-xs" style={{ color: C.textBody }}>Status "मेरे Orders" में देखा जा सकता है।</p>
+      </div>
+    );
+  }
+
+  // Step 1: form (details + quantity + payment method choice)
+  if (stage === "form") {
+    return (
+      <div className="p-4 rounded-xl flex flex-col gap-2" style={{ background: C.card, border: "1px solid " + C.border }}>
+        <div className="flex items-center justify-between mb-1">
+          <p className="text-xs font-semibold" style={{ color: C.textHeading }}>Order Details</p>
+          <button onClick={() => setStage("closed")}><X className="w-4 h-4" style={{ color: C.textMuted }} /></button>
+        </div>
+        <input value={cName} onChange={(e) => setCName(e.target.value)} placeholder="आपका नाम"
+          className="px-3 py-2 rounded-lg outline-none text-sm" style={{ background: C.bg, border: "1px solid " + C.border, color: C.textBody }} />
+        <input value={cPhone} onChange={(e) => setCPhone(e.target.value.replace(/\D/g, "").slice(0, 10))} placeholder="मोबाइल नंबर" inputMode="numeric"
+          className="px-3 py-2 rounded-lg outline-none text-sm" style={{ background: C.bg, border: "1px solid " + C.border, color: C.textBody }} />
+        <textarea value={cAddress} onChange={(e) => setCAddress(e.target.value)} placeholder="पूरा Address (घर/गांव/लैंडमार्क)"
+          rows={2} className="px-3 py-2 rounded-lg outline-none text-sm resize-none"
+          style={{ background: C.bg, border: "1px solid " + C.border, color: C.textBody }} />
+        <input value={cPincode} onChange={(e) => setCPincode(e.target.value.replace(/\D/g, "").slice(0, 6))} placeholder="पिनकोड" inputMode="numeric"
+          className="px-3 py-2 rounded-lg outline-none text-sm" style={{ background: C.bg, border: "1px solid " + C.border, color: C.textBody }} />
+
+        <div className="flex items-center gap-3 mt-1">
+          <p className="text-xs" style={{ color: C.textMuted }}>Quantity:</p>
+          <button onClick={() => setQty((q) => Math.max(1, q - 1))} className="w-7 h-7 rounded-full text-sm font-bold" style={{ background: C.accentSoft, color: C.accent }}>−</button>
+          <span className="text-sm font-semibold" style={{ color: C.textHeading }}>{qty}</span>
+          <button onClick={() => setQty((q) => q + 1)} className="w-7 h-7 rounded-full text-sm font-bold" style={{ background: C.accentSoft, color: C.accent }}>+</button>
+          <p className="text-sm font-bold ml-auto" style={{ color: C.accent }}>&#x20B9;{amount}</p>
+        </div>
+
+        <p className="text-xs font-semibold mt-2" style={{ color: C.textHeading }}>Payment Method चुनें</p>
+        <div className="flex gap-2">
+          <button onClick={() => setPayMethod("cod")}
+            className="flex-1 px-3 py-2 rounded-lg text-xs font-medium"
+            style={payMethod === "cod" ? { background: C.accent, color: "#FFFFFF" } : { background: C.bg, border: "1px solid " + C.border, color: C.textBody }}>
+            Cash on Delivery
+          </button>
+          <button onClick={() => setPayMethod("upi")} disabled={!product.upiId}
+            className="flex-1 px-3 py-2 rounded-lg text-xs font-medium disabled:opacity-40"
+            style={payMethod === "upi" ? { background: C.accent, color: "#FFFFFF" } : { background: C.bg, border: "1px solid " + C.border, color: C.textBody }}>
+            UPI Prepaid
+          </button>
+        </div>
+        {!product.upiId && <p className="text-[11px]" style={{ color: C.textMuted }}>इस विक्रेता ने अभी UPI ID नहीं डाली — सिर्फ COD उपलब्ध है।</p>}
+
+        <button onClick={() => payMethod === "cod" ? placeCodOrder() : (detailsValid ? setStage("upiPayment") : alert("कृपया सभी details सही से भरें।"))}
+          disabled={placing}
+          className="flex items-center justify-center gap-2 px-5 py-3 rounded-xl font-medium text-sm mt-2 disabled:opacity-50"
+          style={{ background: "#2BA84A", color: "#FFFFFF" }}>
+          {placing ? <Loader2 className="w-4 h-4 animate-spin" /> : (payMethod === "cod" ? "Place Order" : "Payment करने आगे बढ़ें")}
+        </button>
+      </div>
+    );
+  }
+
+  // Step 2 (UPI only): show UPI ID + copy + QR + UTR input
+  if (stage === "upiPayment") {
+    return (
+      <div className="p-4 rounded-xl flex flex-col gap-3" style={{ background: C.card, border: "1px solid " + C.border }}>
+        <div className="flex items-center justify-between">
+          <p className="text-xs font-semibold" style={{ color: C.textHeading }}>UPI से Payment करें (&#x20B9;{amount})</p>
+          <button onClick={() => setStage("form")}><X className="w-4 h-4" style={{ color: C.textMuted }} /></button>
+        </div>
+
+        <div className="flex items-center justify-between px-3 py-2 rounded-lg" style={{ background: C.bg, border: "1px solid " + C.border }}>
+          <p className="text-sm font-mono" style={{ color: C.textBody }}>{product.upiId}</p>
+          <button onClick={copyUpiId} className="text-xs font-medium px-2 py-1 rounded" style={{ background: C.accentSoft, color: C.accent }}>
+            {upiCopied ? "✓ Copy हुआ" : "Copy करें"}
+          </button>
+        </div>
+
+        <div className="flex flex-col items-center gap-2 p-3 rounded-xl" style={{ background: C.bg, border: "1px solid " + C.border }}>
+          <p className="text-xs" style={{ color: C.textMuted }}>किसी भी UPI app से यह QR code scan करें</p>
+          <img src={"https://api.qrserver.com/v1/create-qr-code/?size=180x180&data=" + encodeURIComponent(upiLink)}
+            alt="UPI QR Code" className="w-44 h-44 rounded-lg" style={{ border: "1px solid " + C.border }} />
+        </div>
+
+        <p className="text-xs" style={{ color: C.textMuted }}>Payment करने के बाद, Transaction ID (UTR) यहां डालें:</p>
+        <input value={utr} onChange={(e) => setUtr(e.target.value)} placeholder="Transaction ID / UTR"
+          className="px-3 py-2 rounded-lg outline-none text-sm" style={{ background: C.bg, border: "1px solid " + C.border, color: C.textBody }} />
+
+        <button onClick={placeUpiOrder} disabled={placing}
+          className="flex items-center justify-center gap-2 px-5 py-3 rounded-xl font-medium text-sm disabled:opacity-50"
+          style={{ background: "#2BA84A", color: "#FFFFFF" }}>
+          {placing ? <Loader2 className="w-4 h-4 animate-spin" /> : "Place Order"}
+        </button>
+      </div>
+    );
+  }
+
+  return null;
 }
 
 // ─── Product card & detail ────────────────────────────────────────────────────
@@ -574,16 +596,8 @@ function ImageCarousel({ images, alt }) {
   );
 }
 
-function ProductDetail({ product, onBack, onChatWithVendor }) {
-  const hasUpi = !!product.upiId;
+function ProductDetail({ product, onBack }) {
   const [copied, setCopied] = useState(false);
-  const upiLink = hasUpi
-    ? "upi://pay?pa=" + encodeURIComponent(product.upiId) +
-      "&pn=" + encodeURIComponent(product.maker || "Vikreta") +
-      "&am=" + product.price + "&cu=INR" +
-      "&tn=" + encodeURIComponent(product.name)
-    : null;
-
   const productUrl = window.location.origin + import.meta.env.BASE_URL + "?product=" + product.id;
 
   const handleShare = async () => {
@@ -628,32 +642,8 @@ function ProductDetail({ product, onBack, onChatWithVendor }) {
           <p className="text-sm" style={{ color: C.textMuted }}>/ {product.unit}</p>
         </div>
         <div className="flex flex-col gap-3">
-          <WhatsAppOrder product={product} />
-          {onChatWithVendor && (
-            <button onClick={() => onChatWithVendor(product)}
-              className="flex items-center justify-center gap-2 px-5 py-3 rounded-xl font-medium text-sm"
-              style={{ background: C.card, border: "1px solid " + C.accent, color: C.accent }}>
-              <MessageCircle className="w-4 h-4" /> विक्रेता से Chat करें
-            </button>
-          )}
-          {hasUpi ? (
-            <>
-              <a href={upiLink}
-                className="flex items-center justify-center gap-2 px-5 py-3 rounded-xl font-medium text-sm"
-                style={{ background: C.accent, color: "#FFFFFF" }}>
-                <CreditCard className="w-4 h-4" /> UPI से Pay करें (&#x20B9;{product.price})
-              </a>
-              <div className="flex flex-col items-center gap-2 p-4 rounded-xl" style={{ background: C.card, border: "1px solid " + C.border }}>
-                <p className="text-xs" style={{ color: C.textMuted }}>या अपने UPI app से ये QR code scan करें</p>
-                <img src={"https://api.qrserver.com/v1/create-qr-code/?size=180x180&data=" + encodeURIComponent(upiLink)}
-                  alt="UPI QR Code" className="w-44 h-44 rounded-lg" style={{ border: "1px solid " + C.border }} />
-              </div>
-            </>
-          ) : (
-            <div className="p-4 rounded-xl text-sm text-center" style={{ background: C.accentSoft, color: C.textBody }}>
-              इस विक्रेता ने अभी UPI ID नहीं डाली है — कृपया WhatsApp से ऑर्डर करें।
-            </div>
-          )}
+          <OrderNow product={product} />
+          <ChatWithSellerLink product={product} />
         </div>
       </div>
     </div>
@@ -863,10 +853,10 @@ function VendorPanel({ vendor, products, addProduct, updateProduct, removeProduc
   const [pincodeInput, setPincodeInput] = useState(vendor.pincode || "");
   const [savingUpi, setSavingUpi] = useState(false);
   const [claimingPay, setClaimingPay] = useState(false);
-  const [activeChat, setActiveChat] = useState(null);
   const [storeCopied, setStoreCopied] = useState(false);
   const [sharedProductId, setSharedProductId] = useState(null);
-  const myChats = useUserChats(ownerId);
+  const [orderTab, setOrderTab] = useState("pending");
+  const myOrders = useSellerOrders(ownerId);
 
   const handleShareProduct = async (p) => {
     const productUrl = window.location.origin + import.meta.env.BASE_URL + "?product=" + p.id;
@@ -899,22 +889,6 @@ function VendorPanel({ vendor, products, addProduct, updateProduct, removeProduc
       } catch (e) {
         alert("Link: " + storeUrl);
       }
-    }
-  };
-
-  const openChat = (chat, otherName) => setActiveChat({ chatId: chat.id, title: otherName, subtitle: chat.productName ? "बारे में: " + chat.productName : null });
-
-  const openAdminChat = async () => {
-    const chatId = "va_" + ownerId;
-    try {
-      await ensureChat(chatId, {
-        participants: [ownerId, ADMIN_SENTINEL],
-        participantNames: { [ownerId]: vendor.name, [ADMIN_SENTINEL]: "Admin / Support" },
-        type: "vendor-admin",
-      });
-      setActiveChat({ chatId, title: "Admin / Support", subtitle: null });
-    } catch (e) {
-      alert("Chat खुल नहीं पाया — Firestore rules check करें। Error: " + e.message);
     }
   };
 
@@ -994,6 +968,22 @@ function VendorPanel({ vendor, products, addProduct, updateProduct, removeProduc
       if (reloadVendor) await reloadVendor();
     } finally { setClaimingPay(false); }
   };
+
+  const [orderBusyId, setOrderBusyId] = useState(null);
+  const changeOrderStatus = async (orderId, fields, confirmMsg) => {
+    if (confirmMsg && !confirm(confirmMsg)) return;
+    setOrderBusyId(orderId);
+    try { await updateOrderStatus(orderId, fields); }
+    catch (e) { alert("Order update नहीं हो पाया: " + e.message); }
+    finally { setOrderBusyId(null); }
+  };
+  const verifyPayment = (o) => changeOrderStatus(o.id, { paymentStatus: "paid", status: "pending" });
+  const acceptOrder = (o) => changeOrderStatus(o.id, { status: "accepted" });
+  const rejectOrder = (o) => changeOrderStatus(o.id, { status: "rejected" }, "क्या आप वाकई इस order को reject करना चाहते हैं?");
+  const packOrder = (o) => changeOrderStatus(o.id, { status: "packed" });
+  const shipOrder = (o) => changeOrderStatus(o.id, { status: "out_for_delivery" });
+  const deliverOrder = (o) => changeOrderStatus(o.id, { status: "delivered" });
+  const cancelOrder = (o) => changeOrderStatus(o.id, { status: "cancelled" }, "क्या आप वाकई इस order को cancel करना चाहते हैं?");
 
   const startNew = () => { setForm(emptyForm); setEditing("new"); };
   const startEdit = (p) => { setForm({ ...p, images: p.images && p.images.length ? p.images : (p.img ? [p.img] : []) }); setEditing(p.id); };
@@ -1127,19 +1117,83 @@ function VendorPanel({ vendor, products, addProduct, updateProduct, removeProduc
           )}
         </div>
 
-        {/* Messages */}
+        {/* Orders */}
         <div className="p-4 rounded-xl mb-4" style={{ background: C.card, border: "1px solid " + C.border }}>
-          <div className="flex items-center justify-between mb-3">
-            <div className="flex items-center gap-2">
-              <Inbox className="w-4 h-4" style={{ color: C.accent }} />
-              <p className="font-semibold text-sm" style={{ color: C.textHeading }}>Messages ({myChats.length})</p>
-            </div>
-            <button onClick={openAdminChat} className="flex items-center gap-1.5 text-xs font-medium px-3 py-1.5 rounded-lg"
-              style={{ background: C.accentSoft, color: C.accent }}>
-              <MessageCircle className="w-3.5 h-3.5" /> Admin से Chat करें
-            </button>
+          <div className="flex items-center gap-2 mb-3">
+            <ShoppingBasket className="w-4 h-4" style={{ color: C.accent }} />
+            <p className="font-semibold text-sm" style={{ color: C.textHeading }}>Orders ({myOrders.length})</p>
           </div>
-          <ChatInbox chats={myChats} currentUid={ownerId} onOpen={openChat} emptyText="अभी कोई message नहीं है।" />
+
+          <div className="flex gap-1.5 overflow-x-auto pb-2 mb-3">
+            {ORDER_TABS.map((t) => {
+              const count = myOrders.filter((o) => t.key === "cancelled_rejected" ? (o.status === "cancelled" || o.status === "rejected") : o.status === t.key).length;
+              return (
+                <button key={t.key} onClick={() => setOrderTab(t.key)}
+                  className="shrink-0 px-3 py-1.5 rounded-lg text-xs font-medium"
+                  style={orderTab === t.key ? { background: C.accent, color: "#FFFFFF" } : { background: C.bg, border: "1px solid " + C.border, color: C.textBody }}>
+                  {t.label} ({count})
+                </button>
+              );
+            })}
+          </div>
+
+          <div className="flex flex-col gap-3">
+            {myOrders
+              .filter((o) => orderTab === "cancelled_rejected" ? (o.status === "cancelled" || o.status === "rejected") : o.status === orderTab)
+              .map((o) => (
+                <div key={o.id} className="p-3 rounded-xl" style={{ background: C.bg, border: "1px solid " + C.border }}>
+                  <div className="flex items-start justify-between gap-2 mb-2">
+                    <div>
+                      <p className="font-medium text-sm" style={{ color: C.textHeading }}>{o.productName} × {o.quantity}</p>
+                      <p className="text-xs" style={{ color: C.textMuted }}>&#x20B9;{o.amount} · {o.paymentMethod === "upi" ? "UPI Prepaid" : "Cash on Delivery"}</p>
+                    </div>
+                    <OrderStatusBadge status={o.status} />
+                  </div>
+                  <p className="text-xs" style={{ color: C.textBody }}>{o.customerName} · {o.customerPhone}</p>
+                  <p className="text-xs mb-2" style={{ color: C.textMuted }}>{o.customerAddress} · पिनकोड {o.customerPincode}</p>
+                  {o.paymentMethod === "upi" && o.utr && (
+                    <p className="text-xs mb-2 font-medium px-2 py-1 rounded inline-block" style={{ background: "#DCF3DD", color: "#226B2E" }}>
+                      UTR: {o.utr}
+                    </p>
+                  )}
+                  <div className="flex flex-wrap gap-2 mt-1">
+                    {o.status === "payment_pending" && (
+                      <button onClick={() => verifyPayment(o)} disabled={orderBusyId === o.id}
+                        className="px-3 py-1.5 rounded-lg text-xs font-medium disabled:opacity-50" style={{ background: "#DCF3DD", color: "#226B2E" }}>
+                        Payment Verify करें (Paid mark करें)
+                      </button>
+                    )}
+                    {o.status === "pending" && (
+                      <>
+                        <button onClick={() => acceptOrder(o)} disabled={orderBusyId === o.id}
+                          className="px-3 py-1.5 rounded-lg text-xs font-medium disabled:opacity-50" style={{ background: "#DCF3DD", color: "#226B2E" }}>Accept</button>
+                        <button onClick={() => rejectOrder(o)} disabled={orderBusyId === o.id}
+                          className="px-3 py-1.5 rounded-lg text-xs font-medium disabled:opacity-50" style={{ background: "#FBE2DD", color: "#B83A2A" }}>Reject</button>
+                      </>
+                    )}
+                    {o.status === "accepted" && (
+                      <button onClick={() => packOrder(o)} disabled={orderBusyId === o.id}
+                        className="px-3 py-1.5 rounded-lg text-xs font-medium disabled:opacity-50" style={{ background: C.accentSoft, color: C.accent }}>Packed करें</button>
+                    )}
+                    {o.status === "packed" && (
+                      <button onClick={() => shipOrder(o)} disabled={orderBusyId === o.id}
+                        className="px-3 py-1.5 rounded-lg text-xs font-medium disabled:opacity-50" style={{ background: C.accentSoft, color: C.accent }}>Out for Delivery करें</button>
+                    )}
+                    {o.status === "out_for_delivery" && (
+                      <button onClick={() => deliverOrder(o)} disabled={orderBusyId === o.id}
+                        className="px-3 py-1.5 rounded-lg text-xs font-medium disabled:opacity-50" style={{ background: "#DCF3DD", color: "#226B2E" }}>Delivered करें</button>
+                    )}
+                    {!["delivered", "cancelled", "rejected"].includes(o.status) && (
+                      <button onClick={() => cancelOrder(o)} disabled={orderBusyId === o.id}
+                        className="px-3 py-1.5 rounded-lg text-xs font-medium disabled:opacity-50" style={{ background: C.bg, border: "1px solid " + C.border, color: C.textMuted }}>Cancel</button>
+                    )}
+                  </div>
+                </div>
+              ))}
+            {myOrders.filter((o) => orderTab === "cancelled_rejected" ? (o.status === "cancelled" || o.status === "rejected") : o.status === orderTab).length === 0 && (
+              <p className="text-sm" style={{ color: C.textMuted }}>इस category में कोई order नहीं है।</p>
+            )}
+          </div>
         </div>
 
         {/* Products */}
@@ -1233,10 +1287,6 @@ function VendorPanel({ vendor, products, addProduct, updateProduct, removeProduc
           </div>
         )}
       </div>
-      {activeChat && (
-        <ChatThread chatId={activeChat.chatId} currentUid={ownerId} currentName={vendor.name} currentRole="vendor"
-          title={activeChat.title} subtitle={activeChat.subtitle} onClose={() => setActiveChat(null)} />
-      )}
     </div>
   );
 }
@@ -1288,11 +1338,9 @@ function SuperAdminPanel({ vendors, reloadVendors, products, removeProduct, onEx
   const [busyId, setBusyId] = useState(null);
   const [search, setSearch] = useState("");
   const [expandedVendor, setExpandedVendor] = useState(null);
-  const [activeChat, setActiveChat] = useState(null);
   const [activeTab, setActiveTab] = useState("pending");
-  const adminChats = useAdminChats(true);
-
-  const openChat = (chat, otherName) => setActiveChat({ chatId: chat.id, title: otherName, subtitle: chat.productName ? "बारे में: " + chat.productName : null });
+  const [orderTab, setOrderTab] = useState("pending");
+  const adminOrders = useAllOrders(true);
 
   const approve = async (uid) => {
     setBusyId(uid);
@@ -1366,8 +1414,8 @@ function SuperAdminPanel({ vendors, reloadVendors, products, removeProduct, onEx
           <TabButton active={activeTab === "products"} onClick={() => setActiveTab("products")}
             icon={<ShoppingBasket className="w-4 h-4" />} label="कुल Products" value={products.length}
             tint={{ bg: "#E4E8FB", fg: "#33429E" }} />
-          <TabButton active={activeTab === "messages"} onClick={() => setActiveTab("messages")}
-            icon={<Inbox className="w-4 h-4" />} label="Messages" value={adminChats.length}
+          <TabButton active={activeTab === "orders"} onClick={() => setActiveTab("orders")}
+            icon={<ShoppingBasket className="w-4 h-4" />} label="Orders" value={adminOrders.length}
             tint={{ bg: "#F0E6FA", fg: "#6B3FA0" }} />
         </div>
 
@@ -1395,9 +1443,42 @@ function SuperAdminPanel({ vendors, reloadVendors, products, removeProduct, onEx
           </div>
         )}
 
-        {/* Messages tab */}
-        {activeTab === "messages" && (
-          <ChatInbox chats={adminChats} currentUid={adminUid} onOpen={openChat} emptyText="अभी कोई message नहीं है।" />
+        {/* Orders tab */}
+        {activeTab === "orders" && (
+          <div>
+            <div className="flex gap-1.5 overflow-x-auto pb-2 mb-4">
+              {ORDER_TABS.map((t) => {
+                const count = adminOrders.filter((o) => t.key === "cancelled_rejected" ? (o.status === "cancelled" || o.status === "rejected") : o.status === t.key).length;
+                return (
+                  <button key={t.key} onClick={() => setOrderTab(t.key)}
+                    className="shrink-0 px-3 py-1.5 rounded-lg text-xs font-medium"
+                    style={orderTab === t.key ? { background: C.accent, color: "#FFFFFF" } : { background: C.card, border: "1px solid " + C.border, color: C.textBody }}>
+                    {t.label} ({count})
+                  </button>
+                );
+              })}
+            </div>
+            <div className="flex flex-col gap-3">
+              {adminOrders
+                .filter((o) => orderTab === "cancelled_rejected" ? (o.status === "cancelled" || o.status === "rejected") : o.status === orderTab)
+                .filter((o) => !search || (o.productName || "").toLowerCase().includes(search.toLowerCase()) || (o.customerName || "").toLowerCase().includes(search.toLowerCase()) || (o.sellerName || "").toLowerCase().includes(search.toLowerCase()))
+                .map((o) => (
+                  <div key={o.id} className="p-3 rounded-xl" style={{ background: C.card, border: "1px solid " + C.border }}>
+                    <div className="flex items-start justify-between gap-2 mb-2">
+                      <div>
+                        <p className="font-medium text-sm" style={{ color: C.textHeading }}>{o.productName} × {o.quantity}</p>
+                        <p className="text-xs" style={{ color: C.textMuted }}>विक्रेता: {o.sellerName} · &#x20B9;{o.amount} · {o.paymentMethod === "upi" ? "UPI" : "COD"}</p>
+                      </div>
+                      <OrderStatusBadge status={o.status} />
+                    </div>
+                    <p className="text-xs" style={{ color: C.textBody }}>Customer: {o.customerName} · {o.customerPhone}</p>
+                  </div>
+                ))}
+              {adminOrders.filter((o) => orderTab === "cancelled_rejected" ? (o.status === "cancelled" || o.status === "rejected") : o.status === orderTab).length === 0 && (
+                <p className="text-sm" style={{ color: C.textMuted }}>इस category में कोई order नहीं है।</p>
+              )}
+            </div>
+          </div>
         )}
 
         {/* Pending approvals tab */}
@@ -1521,10 +1602,39 @@ function SuperAdminPanel({ vendors, reloadVendors, products, removeProduct, onEx
           </div>
         )}
       </div>
-      {activeChat && (
-        <ChatThread chatId={activeChat.chatId} currentUid={adminUid} currentName="Admin / Support" currentRole="admin"
-          title={activeChat.title} subtitle={activeChat.subtitle} onClose={() => setActiveChat(null)} />
-      )}
+    </div>
+  );
+}
+
+function MyOrdersModal({ onClose }) {
+  const orders = useMyOrders();
+  return (
+    <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center" style={{ background: "rgba(0,0,0,0.4)" }}>
+      <div className="w-full sm:max-w-md h-[85vh] sm:h-[600px] rounded-t-2xl sm:rounded-2xl flex flex-col overflow-hidden" style={{ background: C.bg }}>
+        <div className="px-4 py-3 flex items-center justify-between shrink-0" style={{ background: C.accent }}>
+          <p className="font-semibold text-sm" style={{ color: "#FFFFFF" }}>मेरे Orders</p>
+          <button onClick={onClose}><X className="w-5 h-5" style={{ color: "#FFFFFF" }} /></button>
+        </div>
+        <div className="flex-1 overflow-y-auto px-4 py-3 flex flex-col gap-3">
+          {orders.length === 0 && (
+            <p className="text-sm text-center mt-8" style={{ color: C.textMuted }}>अभी कोई order नहीं है। कोई product order करने पर वो यहां दिखेगा।</p>
+          )}
+          {orders.map((o) => (
+            <div key={o.id} className="p-3 rounded-xl" style={{ background: C.card, border: "1px solid " + C.border }}>
+              <div className="flex items-start justify-between gap-2 mb-1">
+                <p className="font-medium text-sm" style={{ color: C.textHeading }}>{o.productName} × {o.quantity}</p>
+                <OrderStatusBadge status={o.status} />
+              </div>
+              <p className="text-xs" style={{ color: C.textMuted }}>
+                विक्रेता: {o.sellerName} · &#x20B9;{o.amount} · {o.paymentMethod === "upi" ? "UPI Prepaid" : "Cash on Delivery"}
+              </p>
+              {o.paymentMethod === "upi" && (
+                <p className="text-xs mt-1" style={{ color: C.textMuted }}>Payment: {o.paymentStatus === "paid" ? "✓ Paid" : "Verification Pending"}</p>
+              )}
+            </div>
+          ))}
+        </div>
+      </div>
     </div>
   );
 }
@@ -1560,71 +1670,7 @@ export default function ArtisanMarket() {
     }
   };
 
-  const [activeChat, setActiveChat] = useState(null);
-  const [pendingChatAction, setPendingChatAction] = useState(null);
-  const [customerName, setCustomerName] = useState(() => {
-    try { return localStorage.getItem("mkd_customer_name") || ""; } catch { return ""; }
-  });
-
-  const withCustomerName = (action) => {
-    if (customerName) { action(customerName); return; }
-    setPendingChatAction(() => action);
-  };
-
-  const submitCustomerName = (name) => {
-    setCustomerName(name);
-    try { localStorage.setItem("mkd_customer_name", name); } catch {}
-    if (pendingChatAction) { pendingChatAction(name); setPendingChatAction(null); }
-  };
-
-  const openVendorChat = (product) => {
-    withCustomerName(async (name) => {
-      try {
-        const cUser = await ensureAnonymousAuth();
-        const chatId = "cv_" + [cUser.uid, product.ownerId].sort().join("_");
-        await ensureChat(chatId, {
-          participants: [cUser.uid, product.ownerId],
-          participantNames: { [cUser.uid]: name, [product.ownerId]: product.maker || "विक्रेता" },
-          type: "customer-vendor",
-          productId: product.id || null,
-          productName: product.name || null,
-        });
-        setActiveChat({ chatId, title: product.maker || "विक्रेता", subtitle: "बारे में: " + product.name });
-      } catch (e) {
-        alert("Chat खुल नहीं पाया — Firestore rules check करें (Anonymous Auth enabled है ना?)। Error: " + e.message);
-      }
-    });
-  };
-
-  const openSupportChat = () => {
-    withCustomerName(async (name) => {
-      try {
-        const cUser = await ensureAnonymousAuth();
-        const chatId = "ca_" + cUser.uid;
-        await ensureChat(chatId, {
-          participants: [cUser.uid, ADMIN_SENTINEL],
-          participantNames: { [cUser.uid]: name, [ADMIN_SENTINEL]: "Admin / Support" },
-          type: "customer-admin",
-        });
-        setActiveChat({ chatId, title: "Admin / Support", subtitle: null });
-      } catch (e) {
-        alert("Chat खुल नहीं पाया — Firestore rules check करें (Anonymous Auth enabled है ना?)। Error: " + e.message);
-      }
-    });
-  };
-
-  const chatOverlays = (
-    <>
-      {pendingChatAction && (
-        <NamePrompt onSubmit={submitCustomerName} onCancel={() => setPendingChatAction(null)} />
-      )}
-      {activeChat && (
-        <ChatThread chatId={activeChat.chatId} currentUid={user?.uid || auth.currentUser?.uid}
-          currentName={customerName || "Customer"} currentRole="customer"
-          title={activeChat.title} subtitle={activeChat.subtitle} onClose={() => setActiveChat(null)} />
-      )}
-    </>
-  );
+  const [showMyOrders, setShowMyOrders] = useState(false);
 
   const allCategories = ["सभी", ...CATEGORIES];
 
@@ -1693,9 +1739,8 @@ export default function ArtisanMarket() {
     return (
       <div className="min-h-screen w-full" style={{ background: C.bg }}>
         <div className="max-w-2xl mx-auto">
-          <ProductDetail product={selected} onBack={() => setSelected(null)} onChatWithVendor={openVendorChat} />
+          <ProductDetail product={selected} onBack={() => setSelected(null)} />
         </div>
-        {chatOverlays}
       </div>
     );
   }
@@ -1775,14 +1820,14 @@ export default function ArtisanMarket() {
         Thrive Skills Educational Society की एक पहल · Technology Partner: Hector365
       </p>
 
-      {/* Floating Support Chat Button */}
-      <button onClick={openSupportChat}
+      {/* Floating "मेरे Orders" Button */}
+      <button onClick={() => setShowMyOrders(true)}
         className="fixed bottom-5 right-5 flex items-center gap-2 px-4 py-3 rounded-full shadow-lg z-40"
         style={{ background: C.accent, color: "#FFFFFF" }}>
-        <MessageCircle className="w-4 h-4" /> <span className="text-sm font-medium">Help</span>
+        <ShoppingBasket className="w-4 h-4" /> <span className="text-sm font-medium">मेरे Orders</span>
       </button>
 
-      {chatOverlays}
+      {showMyOrders && <MyOrdersModal onClose={() => setShowMyOrders(false)} />}
     </div>
   );
 }
