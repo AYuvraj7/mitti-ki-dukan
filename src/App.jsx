@@ -205,6 +205,52 @@ function OrderStatusBadge({ status }) {
   );
 }
 
+// Poora step-by-step tracking timeline — jaise Amazon/Swiggy mein hota hai
+function OrderTracker({ order }) {
+  const isCancelledOrRejected = order.status === "cancelled" || order.status === "rejected";
+
+  // UPI orders "payment_pending" se shuru hote hain, COD seedha "pending" se
+  const steps = order.paymentMethod === "upi"
+    ? ["payment_pending", "pending", "accepted", "packed", "out_for_delivery", "delivered"]
+    : ["pending", "accepted", "packed", "out_for_delivery", "delivered"];
+
+  const currentIdx = steps.indexOf(order.status);
+
+  if (isCancelledOrRejected) {
+    const meta = ORDER_STATUS_META[order.status];
+    return (
+      <div className="flex items-center gap-2 px-3 py-2 rounded-lg mt-2" style={{ background: meta.bg }}>
+        <X className="w-4 h-4 shrink-0" style={{ color: meta.fg }} />
+        <p className="text-xs font-medium" style={{ color: meta.fg }}>यह order {meta.label.toLowerCase()} हो गया है।</p>
+      </div>
+    );
+  }
+
+  return (
+    <div className="flex flex-col mt-3">
+      {steps.map((key, idx) => {
+        const meta = ORDER_STATUS_META[key];
+        const done = idx <= currentIdx;
+        const isLast = idx === steps.length - 1;
+        return (
+          <div key={key} className="flex gap-2">
+            <div className="flex flex-col items-center">
+              <div className="w-5 h-5 rounded-full flex items-center justify-center shrink-0"
+                style={{ background: done ? "#226B2E" : C.border }}>
+                {done && <Check className="w-3 h-3" style={{ color: "#FFFFFF" }} />}
+              </div>
+              {!isLast && <div className="w-0.5 flex-1 min-h-[18px]" style={{ background: idx < currentIdx ? "#226B2E" : C.border }} />}
+            </div>
+            <p className="text-xs pb-4" style={{ color: done ? C.textHeading : C.textMuted, fontWeight: idx === currentIdx ? 600 : 400 }}>
+              {meta.label}
+            </p>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
 const ORDER_TABS = [
   { key: "payment_pending", label: "Payment Pending" },
   { key: "pending", label: "Pending" },
@@ -317,7 +363,52 @@ function ChatWithSellerLink({ product }) {
 }
 
 // ─── Order Now — poora marketplace order + payment flow ───────────────────────
-function OrderNow({ product }) {
+// Order place hone ke baad dikhने wala poori tarah optional "platform support" card —
+// yeh kabhi checkout ko block nahi karta, customer close/ignore kar sakta hai, aur seller ke
+// UPI se bilkul alag (Society ke) UPI ID pe jaata hai — isliye seller ka paisa kam nahi hota
+function PlatformSupportCard() {
+  const [open, setOpen] = useState(false);
+  const [copied, setCopied] = useState(false);
+
+  const copyUpi = async () => {
+    try { await navigator.clipboard.writeText(SOCIETY_UPI_ID); setCopied(true); setTimeout(() => setCopied(false), 1500); }
+    catch { alert("UPI ID: " + SOCIETY_UPI_ID); }
+  };
+
+  if (!open) {
+    return (
+      <button onClick={() => setOpen(true)}
+        className="text-xs px-3 py-2 rounded-lg text-center"
+        style={{ background: C.accentSoft, color: C.accent }}>
+        💛 क्या आप Mitti Ki Dukaan को थोड़ा सपोर्ट करना चाहेंगे? (बिल्कुल ऐच्छिक)
+      </button>
+    );
+  }
+
+  return (
+    <div className="p-4 rounded-xl flex flex-col items-center gap-2 text-center" style={{ background: C.card, border: "1px solid " + C.border }}>
+      <p className="text-xs" style={{ color: C.textBody }}>
+        यह platform को चलाने में मदद करता है — पर बिल्कुल ऐच्छिक है, कोई ज़बरदस्ती नहीं।
+      </p>
+      <img src={"https://api.qrserver.com/v1/create-qr-code/?size=150x150&data=" + encodeURIComponent("upi://pay?pa=" + SOCIETY_UPI_ID + "&pn=Mitti%20Ki%20Dukaan&cu=INR")}
+        alt="Support QR" className="rounded-lg" style={{ border: "1px solid " + C.border }} />
+      <div className="flex items-center gap-2 px-3 py-1.5 rounded-lg" style={{ background: C.bg, border: "1px solid " + C.border }}>
+        <p className="text-xs font-medium" style={{ color: C.textBody }}>{SOCIETY_UPI_ID}</p>
+        <button onClick={copyUpi} className="text-[11px] font-semibold shrink-0" style={{ color: C.accent }}>
+          {copied ? "✓ Copy हुआ" : "Copy करें"}
+        </button>
+      </div>
+      <button onClick={() => setOpen(false)} className="text-[11px]" style={{ color: C.textMuted }}>बंद करें</button>
+    </div>
+  );
+}
+
+function OrderNow({ product, buyerUser }) {
+  const isBuyerLoggedIn = buyerUser && !buyerUser.isAnonymous;
+  const handleGoogleLogin = async () => {
+    try { await signInWithPopup(auth, new GoogleAuthProvider()); }
+    catch (e) { if (e.code !== "auth/popup-closed-by-user") alert("Login नहीं हो पाया: " + e.message); }
+  };
   const [stage, setStage] = useState("closed"); // closed -> form -> upiPayment -> done
   const [cName, setCName] = useState("");
   const [cPhone, setCPhone] = useState("");
@@ -431,13 +522,16 @@ function OrderNow({ product }) {
 
   if (stage === "done") {
     return (
-      <div className="p-5 rounded-xl flex flex-col items-center text-center gap-2" style={{ background: "#DCF3DD", border: "1px solid #226B2E" }}>
-        <Check className="w-8 h-8" style={{ color: "#226B2E" }} />
-        <p className="font-semibold text-sm" style={{ color: "#226B2E" }}>
-          {payMethod === "upi" ? "Order भेज दिया गया — Payment Verification Pending" : "Order सफलतापूर्वक Place हो गया!"}
-        </p>
-        <p className="text-xs" style={{ color: C.textBody }}>Order ID: {placedOrderId}</p>
-        <p className="text-xs" style={{ color: C.textBody }}>Status "मेरे Orders" में देखा जा सकता है।</p>
+      <div className="flex flex-col gap-3">
+        <div className="p-5 rounded-xl flex flex-col items-center text-center gap-2" style={{ background: "#DCF3DD", border: "1px solid #226B2E" }}>
+          <Check className="w-8 h-8" style={{ color: "#226B2E" }} />
+          <p className="font-semibold text-sm" style={{ color: "#226B2E" }}>
+            {payMethod === "upi" ? "Order भेज दिया गया — Payment Verification Pending" : "Order सफलतापूर्वक Place हो गया!"}
+          </p>
+          <p className="text-xs" style={{ color: C.textBody }}>Order ID: {placedOrderId}</p>
+          <p className="text-xs" style={{ color: C.textBody }}>Status "मेरे Orders" में देखा जा सकता है।</p>
+        </div>
+        <PlatformSupportCard />
       </div>
     );
   }
@@ -450,6 +544,20 @@ function OrderNow({ product }) {
           <p className="text-xs font-semibold" style={{ color: C.textHeading }}>Order Details</p>
           <button onClick={() => setStage("closed")}><X className="w-4 h-4" style={{ color: C.textMuted }} /></button>
         </div>
+
+        {/* Login banner — order place karne SE PEHLE dikhta hai, taaki customer decide kar sake */}
+        {isBuyerLoggedIn ? (
+          <p className="text-[11px] px-2 py-1.5 rounded-lg" style={{ background: "#DCF3DD", color: "#226B2E" }}>
+            ✓ {buyerUser.displayName || buyerUser.email} से लॉगिन है — यह order आपके account में save होगा
+          </p>
+        ) : (
+          <button onClick={handleGoogleLogin}
+            className="text-[11px] text-left px-2 py-1.5 rounded-lg"
+            style={{ background: C.accentSoft, color: C.accent }}>
+            💡 Google से Login करें ताकि यह order आप किसी भी device से track कर सकें (ऐच्छिक — बिना login भी order हो जाएगा)
+          </button>
+        )}
+
         <input value={cName} onChange={(e) => setCName(e.target.value)} placeholder="आपका नाम"
           className="px-3 py-2 rounded-lg outline-none text-sm" style={{ background: C.bg, border: "1px solid " + C.border, color: C.textBody }} />
         <input value={cPhone} onChange={(e) => setCPhone(e.target.value.replace(/\D/g, "").slice(0, 10))} placeholder="मोबाइल नंबर" inputMode="numeric"
@@ -611,7 +719,7 @@ function ImageCarousel({ images, alt }) {
   );
 }
 
-function ProductDetail({ product, onBack }) {
+function ProductDetail({ product, onBack, buyerUser }) {
   const [copied, setCopied] = useState(false);
   const productUrl = window.location.origin + import.meta.env.BASE_URL + "?product=" + product.id;
 
@@ -657,7 +765,7 @@ function ProductDetail({ product, onBack }) {
           <p className="text-sm" style={{ color: C.textMuted }}>/ {product.unit}</p>
         </div>
         <div className="flex flex-col gap-3">
-          <OrderNow product={product} />
+          <OrderNow product={product} buyerUser={buyerUser} />
           <ChatWithSellerLink product={product} />
         </div>
       </div>
@@ -1624,6 +1732,7 @@ function SuperAdminPanel({ vendors, reloadVendors, products, removeProduct, onEx
 function MyOrdersModal({ onClose, buyerUser }) {
   const orders = useMyOrders(buyerUser && !buyerUser.isAnonymous ? buyerUser.uid : null);
   const isBuyerLoggedIn = buyerUser && !buyerUser.isAnonymous;
+  const [expandedId, setExpandedId] = useState(null);
 
   const handleGoogleLogin = async () => {
     try { await signInWithPopup(auth, new GoogleAuthProvider()); }
@@ -1658,26 +1767,38 @@ function MyOrdersModal({ onClose, buyerUser }) {
           {orders.length === 0 && (
             <p className="text-sm text-center mt-8" style={{ color: C.textMuted }}>अभी कोई order नहीं है। कोई product order करने पर वो यहां दिखेगा।</p>
           )}
-          {orders.map((o) => (
-            <div key={o.id} className="p-3 rounded-xl" style={{ background: C.card, border: "1px solid " + C.border }}>
-              <div className="flex items-start justify-between gap-2 mb-1">
-                <p className="font-medium text-sm" style={{ color: C.textHeading }}>{o.productName} × {o.quantity}</p>
-                <OrderStatusBadge status={o.status} />
+          {orders.map((o) => {
+            const isExpanded = expandedId === o.id;
+            return (
+              <div key={o.id} className="p-3 rounded-xl" style={{ background: C.card, border: "1px solid " + C.border }}>
+                <div className="flex items-start justify-between gap-2 mb-1">
+                  <p className="font-medium text-sm" style={{ color: C.textHeading }}>{o.productName} × {o.quantity}</p>
+                  <OrderStatusBadge status={o.status} />
+                </div>
+                <p className="text-xs" style={{ color: C.textMuted }}>
+                  विक्रेता: {o.sellerName} · &#x20B9;{o.amount} · {o.paymentMethod === "upi" ? "UPI Prepaid" : "Cash on Delivery"}
+                </p>
+                {o.paymentMethod === "upi" && (
+                  <p className="text-xs mt-1" style={{ color: C.textMuted }}>Payment: {o.paymentStatus === "paid" ? "✓ Paid" : "Verification Pending"}</p>
+                )}
+
+                <button onClick={() => setExpandedId(isExpanded ? null : o.id)}
+                  className="flex items-center justify-between w-full text-xs font-medium px-3 py-1.5 rounded-lg mt-2"
+                  style={{ background: C.accentSoft, color: C.accent }}>
+                  <span>Tracking देखें</span>
+                  <span>{isExpanded ? "▲" : "▼"}</span>
+                </button>
+                {isExpanded && <OrderTracker order={o} />}
+
+                {o.sellerPhone && (
+                  <a href={"https://wa.me/91" + o.sellerPhone.replace(/\D/g, "")} target="_blank" rel="noopener noreferrer"
+                    className="inline-flex items-center gap-1 mt-2 text-xs px-2 py-1 rounded" style={{ background: "#DCF3DD", color: "#226B2E" }}>
+                    <MessageCircle className="w-3 h-3" /> विक्रेता से मदद के लिए Chat करें
+                  </a>
+                )}
               </div>
-              <p className="text-xs" style={{ color: C.textMuted }}>
-                विक्रेता: {o.sellerName} · &#x20B9;{o.amount} · {o.paymentMethod === "upi" ? "UPI Prepaid" : "Cash on Delivery"}
-              </p>
-              {o.paymentMethod === "upi" && (
-                <p className="text-xs mt-1" style={{ color: C.textMuted }}>Payment: {o.paymentStatus === "paid" ? "✓ Paid" : "Verification Pending"}</p>
-              )}
-              {o.sellerPhone && (
-                <a href={"https://wa.me/91" + o.sellerPhone.replace(/\D/g, "")} target="_blank" rel="noopener noreferrer"
-                  className="inline-flex items-center gap-1 mt-2 text-xs px-2 py-1 rounded" style={{ background: "#DCF3DD", color: "#226B2E" }}>
-                  <MessageCircle className="w-3 h-3" /> विक्रेता से मदद के लिए Chat करें
-                </a>
-              )}
-            </div>
-          ))}
+            );
+          })}
         </div>
       </div>
     </div>
@@ -1788,7 +1909,7 @@ export default function ArtisanMarket() {
     return (
       <div className="min-h-screen w-full" style={{ background: C.bg }}>
         <div className="max-w-2xl mx-auto">
-          <ProductDetail product={selected} onBack={() => setSelected(null)} />
+          <ProductDetail product={selected} onBack={() => setSelected(null)} buyerUser={user} />
         </div>
       </div>
     );
