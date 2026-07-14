@@ -279,6 +279,10 @@ async function updateOrderStatus(orderId, fields) {
   await updateDoc(doc(db, "orders", orderId), fields);
 }
 
+async function deleteOrderDoc(orderId) {
+  await deleteDoc(doc(db, "orders", orderId));
+}
+
 function useSellerOrders(ownerId) {
   const [orders, setOrders] = useState([]);
   useEffect(() => {
@@ -539,6 +543,18 @@ function OrderNow({ product, buyerUser }) {
   }
 
   if (stage === "done") {
+    const sellerCleanPhone = (product.sellerPhone || "").replace(/\D/g, "");
+    const sellerPhoneForLink = sellerCleanPhone.length === 10 ? "91" + sellerCleanPhone : sellerCleanPhone;
+    const notifySellerLink = "https://wa.me/" + sellerPhoneForLink + "?text=" + encodeURIComponent(
+      "🛒 नया Order मिला है!\n\n" +
+      "Product: " + product.name + " × " + qty + "\n" +
+      "कीमत: ₹" + amount + " (" + (payMethod === "upi" ? "UPI Prepaid" : "Cash on Delivery") + ")\n" +
+      "ग्राहक: " + cName + " · " + cPhone + "\n" +
+      "Address: " + cAddress + " · पिनकोड " + cPincode + "\n\n" +
+      "Order ID: " + placedOrderId + "\n" +
+      "कृपया अपने Seller Dashboard में जाकर Order Accept करें।"
+    );
+
     return (
       <div className="flex flex-col gap-3">
         <div className="p-5 rounded-xl flex flex-col items-center text-center gap-2" style={{ background: "#DCF3DD", border: "1px solid #226B2E" }}>
@@ -549,6 +565,13 @@ function OrderNow({ product, buyerUser }) {
           <p className="text-xs" style={{ color: C.textBody }}>Order ID: {placedOrderId}</p>
           <p className="text-xs" style={{ color: C.textBody }}>Status "मेरे Orders" में देखा जा सकता है।</p>
         </div>
+        {product.sellerPhone && (
+          <a href={notifySellerLink} target="_blank" rel="noopener noreferrer"
+            className="flex items-center justify-center gap-2 px-5 py-3 rounded-xl font-medium text-sm"
+            style={{ background: "#2BA84A", color: "#FFFFFF" }}>
+            <MessageCircle className="w-4 h-4" /> विक्रेता को WhatsApp पर सूचना भेजें
+          </a>
+        )}
         <PlatformSupportCard />
       </div>
     );
@@ -1126,6 +1149,23 @@ function VendorPanel({ vendor, products, addProduct, updateProduct, removeProduc
   const shipOrder = (o) => changeOrderStatus(o.id, { status: "out_for_delivery" });
   const deliverOrder = (o) => changeOrderStatus(o.id, { status: "delivered" });
   const cancelOrder = (o) => changeOrderStatus(o.id, { status: "cancelled" }, "क्या आप वाकई इस order को cancel करना चाहते हैं?");
+  const buildBuyerNotifyLink = (o) => {
+    const cleanPhone = (o.customerPhone || "").replace(/\D/g, "");
+    const phoneForLink = cleanPhone.length === 10 ? "91" + cleanPhone : cleanPhone;
+    const statusLabel = (ORDER_STATUS_META[o.status] || { label: o.status }).label;
+    return "https://wa.me/" + phoneForLink + "?text=" + encodeURIComponent(
+      "नमस्ते " + o.customerName + "! आपके order (" + o.productName + " × " + o.quantity + ") का status अपडेट हुआ है: " + statusLabel + "।\n\nधन्यवाद — " + vendor.name
+    );
+  };
+
+
+  const deleteOrder = async (o) => {
+    if (!confirm("इस order को हमेशा के लिए डिलीट करें? यह वापस नहीं आएगा।")) return;
+    setOrderBusyId(o.id);
+    try { await deleteOrderDoc(o.id); }
+    catch (e) { alert("Order delete नहीं हो पाया: " + e.message); }
+    finally { setOrderBusyId(null); }
+  };
 
   const startNew = () => { setForm(emptyForm); setEditing("new"); };
   const startEdit = (p) => { setForm({ ...p, images: p.images && p.images.length ? p.images : (p.img ? [p.img] : []) }); setEditing(p.id); };
@@ -1289,10 +1329,24 @@ function VendorPanel({ vendor, products, addProduct, updateProduct, removeProduc
                       <p className="font-medium text-sm" style={{ color: C.textHeading }}>{o.productName} × {o.quantity}</p>
                       <p className="text-xs" style={{ color: C.textMuted }}>&#x20B9;{o.amount} · {o.paymentMethod === "upi" ? "UPI Prepaid" : "Cash on Delivery"}</p>
                     </div>
-                    <OrderStatusBadge status={o.status} />
+                    <div className="flex items-center gap-1.5 shrink-0">
+                      <OrderStatusBadge status={o.status} />
+                      {["delivered", "cancelled", "rejected"].includes(o.status) && (
+                        <button onClick={() => deleteOrder(o)} disabled={orderBusyId === o.id}
+                          className="p-1 rounded-lg disabled:opacity-50" style={{ background: "#FBE2DD", color: "#B83A2A" }} title="Order Delete करें">
+                          <Trash2 className="w-3.5 h-3.5" />
+                        </button>
+                      )}
+                    </div>
                   </div>
                   <p className="text-xs" style={{ color: C.textBody }}>{o.customerName} · {o.customerPhone}</p>
                   <p className="text-xs mb-2" style={{ color: C.textMuted }}>{o.customerAddress} · पिनकोड {o.customerPincode}</p>
+                  {o.customerPhone && (
+                    <a href={buildBuyerNotifyLink(o)} target="_blank" rel="noopener noreferrer"
+                      className="inline-flex items-center gap-1 mb-2 text-xs px-2 py-1 rounded" style={{ background: "#DCF3DD", color: "#226B2E" }}>
+                      <MessageCircle className="w-3 h-3" /> ग्राहक को Status बताएं (WhatsApp)
+                    </a>
+                  )}
                   {o.paymentMethod === "upi" && o.utr && (
                     <p className="text-xs mb-2 font-medium px-2 py-1 rounded inline-block" style={{ background: "#DCF3DD", color: "#226B2E" }}>
                       UTR: {o.utr}
@@ -1749,8 +1803,8 @@ function SuperAdminPanel({ vendors, reloadVendors, products, removeProduct, onEx
 }
 
 function MyOrdersModal({ onClose, buyerUser }) {
-  const orders = useMyOrders(buyerUser && !buyerUser.isAnonymous ? buyerUser.uid : null);
   const isBuyerLoggedIn = buyerUser && !buyerUser.isAnonymous;
+  const orders = useMyOrders(isBuyerLoggedIn ? buyerUser.uid : null);
   const [expandedId, setExpandedId] = useState(null);
 
   const handleGoogleLogin = async () => {
@@ -1766,24 +1820,28 @@ function MyOrdersModal({ onClose, buyerUser }) {
           <button onClick={onClose}><X className="w-5 h-5" style={{ color: "#FFFFFF" }} /></button>
         </div>
 
-        {/* Buyer login banner — sabhi devices pe orders dekhne ke liye (free, Google se) */}
-        <div className="px-4 pt-3 shrink-0">
-          {isBuyerLoggedIn ? (
-            <div className="flex items-center justify-between gap-2 px-3 py-2 rounded-xl mb-2" style={{ background: "#DCF3DD" }}>
-              <p className="text-xs" style={{ color: "#226B2E" }}>✓ {buyerUser.displayName || buyerUser.email} से लॉगिन है — orders सभी devices पर दिखेंगे</p>
-              <button onClick={() => signOut(auth)} className="text-xs font-medium shrink-0" style={{ color: "#226B2E" }}>Logout</button>
+        {!isBuyerLoggedIn ? (
+          // Login zaroori hai — bina login koi bhi order nahi dikhega (privacy ke liye)
+          <div className="flex-1 flex flex-col items-center justify-center px-6 gap-3 text-center">
+            <Lock className="w-8 h-8" style={{ color: C.textMuted }} />
+            <p className="text-sm" style={{ color: C.textBody }}>अपने orders देखने के लिए पहले Login करें</p>
+            <div className="w-full max-w-xs">
+              <GoogleLoginButton onClick={handleGoogleLogin} label="Google से Login करें" />
             </div>
-          ) : (
-            <div className="mb-2">
-              <GoogleLoginButton onClick={handleGoogleLogin} label="Google से Login करें (सभी devices पर orders देखने के लिए)" />
+          </div>
+        ) : (
+          <>
+            <div className="px-4 pt-3 shrink-0">
+              <div className="flex items-center justify-between gap-2 px-3 py-2 rounded-xl mb-2" style={{ background: "#DCF3DD" }}>
+                <p className="text-xs" style={{ color: "#226B2E" }}>✓ {buyerUser.displayName || buyerUser.email} से लॉगिन है</p>
+                <button onClick={() => signOut(auth)} className="text-xs font-medium shrink-0" style={{ color: "#226B2E" }}>Logout</button>
+              </div>
             </div>
-          )}
-        </div>
 
-        <div className="flex-1 overflow-y-auto px-4 py-3 flex flex-col gap-3">
-          {orders.length === 0 && (
-            <p className="text-sm text-center mt-8" style={{ color: C.textMuted }}>अभी कोई order नहीं है। कोई product order करने पर वो यहां दिखेगा।</p>
-          )}
+            <div className="flex-1 overflow-y-auto px-4 py-3 flex flex-col gap-3">
+              {orders.length === 0 && (
+                <p className="text-sm text-center mt-8" style={{ color: C.textMuted }}>अभी कोई order नहीं है। कोई product order करने पर वो यहां दिखेगा।</p>
+              )}
           {orders.map((o) => {
             const isExpanded = expandedId === o.id;
             return (
@@ -1816,7 +1874,9 @@ function MyOrdersModal({ onClose, buyerUser }) {
               </div>
             );
           })}
-        </div>
+            </div>
+          </>
+        )}
       </div>
     </div>
   );
