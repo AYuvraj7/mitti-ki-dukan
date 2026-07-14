@@ -378,28 +378,46 @@ function PlatformSupportCard() {
   if (!open) {
     return (
       <button onClick={() => setOpen(true)}
-        className="text-xs px-3 py-2 rounded-lg text-center"
+        className="text-xs px-3 py-2.5 rounded-lg text-center"
         style={{ background: C.accentSoft, color: C.accent }}>
-        💛 क्या आप Mitti Ki Dukaan को थोड़ा सपोर्ट करना चाहेंगे? (बिल्कुल ऐच्छिक)
+        💛 क्या आप Mitti Ki Dukaan को सपोर्ट करना चाहेंगे?
       </button>
     );
   }
 
   return (
     <div className="p-4 rounded-xl flex flex-col items-center gap-2 text-center" style={{ background: C.card, border: "1px solid " + C.border }}>
-      <p className="text-xs" style={{ color: C.textBody }}>
-        यह platform को चलाने में मदद करता है — पर बिल्कुल ऐच्छिक है, कोई ज़बरदस्ती नहीं।
+      <p className="text-xs leading-relaxed" style={{ color: C.textBody }}>
+        यह platform उन लोगों की मदद के लिए बनाया गया है जो छोटे उद्योगों से अपना घर चलाते हैं।
+        Platform उनसे कुछ नहीं लेता — कोई commission नहीं।
+        Platform को चलाने में जो खर्चा आता है, उसके लिए आपका छोटा सा सपोर्ट हमारी मदद करेगा। 🙏
       </p>
       <img src={"https://api.qrserver.com/v1/create-qr-code/?size=150x150&data=" + encodeURIComponent("upi://pay?pa=" + SOCIETY_UPI_ID + "&pn=Mitti%20Ki%20Dukaan&cu=INR")}
-        alt="Support QR" className="rounded-lg" style={{ border: "1px solid " + C.border }} />
+        alt="Support QR" className="rounded-lg mt-1" style={{ border: "1px solid " + C.border }} />
       <div className="flex items-center gap-2 px-3 py-1.5 rounded-lg" style={{ background: C.bg, border: "1px solid " + C.border }}>
         <p className="text-xs font-medium" style={{ color: C.textBody }}>{SOCIETY_UPI_ID}</p>
         <button onClick={copyUpi} className="text-[11px] font-semibold shrink-0" style={{ color: C.accent }}>
           {copied ? "✓ Copy हुआ" : "Copy करें"}
         </button>
       </div>
-      <button onClick={() => setOpen(false)} className="text-[11px]" style={{ color: C.textMuted }}>बंद करें</button>
+      <button onClick={() => setOpen(false)} className="text-[11px] mt-1" style={{ color: C.textMuted }}>बंद करें</button>
     </div>
+  );
+}
+
+function GoogleLoginButton({ onClick, label }) {
+  return (
+    <button onClick={onClick}
+      className="flex items-center justify-center gap-2.5 w-full px-4 py-2.5 rounded-xl text-sm font-medium shadow-sm"
+      style={{ background: "#FFFFFF", border: "1px solid #DADCE0", color: "#3C4043" }}>
+      <svg width="18" height="18" viewBox="0 0 48 48">
+        <path fill="#FFC107" d="M43.6 20.5H42V20H24v8h11.3C33.7 32.9 29.3 36 24 36c-6.6 0-12-5.4-12-12s5.4-12 12-12c3.1 0 5.8 1.1 8 3l5.7-5.7C34.5 6 29.6 4 24 4 12.9 4 4 12.9 4 24s8.9 20 20 20 20-8.9 20-20c0-1.3-.1-2.7-.4-3.5z" />
+        <path fill="#FF3D00" d="m6.3 14.7 6.6 4.8C14.7 15.9 19 13 24 13c3.1 0 5.8 1.1 8 3l5.7-5.7C34.5 6 29.6 4 24 4c-7.5 0-13.9 4.3-17.1 10.7z" />
+        <path fill="#4CAF50" d="M24 44c5.5 0 10.4-1.9 14.2-5.1l-6.6-5.6C29.6 34.9 27 36 24 36c-5.3 0-9.7-3.1-11.3-7.6l-6.6 5.1C9.9 39.6 16.4 44 24 44z" />
+        <path fill="#1976D2" d="M43.6 20.5H42V20H24v8h11.3c-.8 2.3-2.3 4.3-4.1 5.7l6.6 5.6C41.6 36.3 44 30.6 44 24c0-1.3-.1-2.7-.4-3.5z" />
+      </svg>
+      {label}
+    </button>
   );
 }
 
@@ -551,11 +569,12 @@ function OrderNow({ product, buyerUser }) {
             ✓ {buyerUser.displayName || buyerUser.email} से लॉगिन है — यह order आपके account में save होगा
           </p>
         ) : (
-          <button onClick={handleGoogleLogin}
-            className="text-[11px] text-left px-2 py-1.5 rounded-lg"
-            style={{ background: C.accentSoft, color: C.accent }}>
-            💡 Google से Login करें ताकि यह order आप किसी भी device से track कर सकें (ऐच्छिक — बिना login भी order हो जाएगा)
-          </button>
+          <>
+            <p className="text-[11px] px-1" style={{ color: C.textMuted }}>
+              💡 Login करके order करें ताकि इसे किसी भी device से track कर सकें (ऐच्छिक — बिना login भी order हो जाएगा)
+            </p>
+            <GoogleLoginButton onClick={handleGoogleLogin} label="Google से Login करें" />
+          </>
         )}
 
         <input value={cName} onChange={(e) => setCName(e.target.value)} placeholder="आपका नाम"
@@ -1755,11 +1774,9 @@ function MyOrdersModal({ onClose, buyerUser }) {
               <button onClick={() => signOut(auth)} className="text-xs font-medium shrink-0" style={{ color: "#226B2E" }}>Logout</button>
             </div>
           ) : (
-            <button onClick={handleGoogleLogin}
-              className="w-full flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl text-sm font-medium mb-2"
-              style={{ background: C.card, border: "1px solid " + C.border, color: C.textBody }}>
-              Google से Login करें (सभी devices पर orders देखने के लिए)
-            </button>
+            <div className="mb-2">
+              <GoogleLoginButton onClick={handleGoogleLogin} label="Google से Login करें (सभी devices पर orders देखने के लिए)" />
+            </div>
           )}
         </div>
 
@@ -1819,6 +1836,12 @@ export default function ArtisanMarket() {
   const [authView, setAuthView] = useState(null);
   const [storeFilter, setStoreFilter] = useState(null); // shared "Share Store" link se aaya vendor uid
   const [appCopied, setAppCopied] = useState(false);
+  const [showInAppWarning, setShowInAppWarning] = useState(() => {
+    const ua = navigator.userAgent || "";
+    // WhatsApp/Facebook/Instagram/Line jaise apps ke andar khulne wale mini-browser detect karo —
+    // in browsers mein Google Login aur PWA install kaam nahi karte
+    return /FBAN|FBAV|Instagram|Line\/|WhatsApp|; wv\)/i.test(ua);
+  });
 
   const handleShareApp = async () => {
     const siteUrl = window.location.origin + import.meta.env.BASE_URL;
@@ -1938,6 +1961,19 @@ export default function ArtisanMarket() {
           </div>
         </div>
       </div>
+
+      {/* In-app browser (WhatsApp/FB/Instagram) detect hone par warning — Google Login/PWA install yahan kaam nahi karte */}
+      {showInAppWarning && (
+        <div className="max-w-6xl mx-auto px-5 pt-3">
+          <div className="flex items-start justify-between gap-2 px-4 py-3 rounded-xl" style={{ background: "#FCEFC7", border: "1px solid #E0B400" }}>
+            <p className="text-xs" style={{ color: "#8A6A00" }}>
+              ⚠️ आप शायद WhatsApp/Instagram के अंदर के browser में हैं — यहां Google Login और App Install काम नहीं करते।
+              सबसे ऊपर <b>⋮ (तीन डॉट) मेनू → "Open in Browser" / "Chrome में खोलें"</b> पर टैप करें, फिर सब सही से काम करेगा।
+            </p>
+            <button onClick={() => setShowInAppWarning(false)} className="shrink-0"><X className="w-4 h-4" style={{ color: "#8A6A00" }} /></button>
+          </div>
+        </div>
+      )}
 
       {/* Shared Store link se aaye ho to banner dikhao */}
       {storeFilter && (
