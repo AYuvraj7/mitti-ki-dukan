@@ -371,7 +371,6 @@ function ChatWithSellerLink({ product }) {
 // yeh kabhi checkout ko block nahi karta, customer close/ignore kar sakta hai, aur seller ke
 // UPI se bilkul alag (Society ke) UPI ID pe jaata hai — isliye seller ka paisa kam nahi hota
 function PlatformSupportCard() {
-  const [open, setOpen] = useState(false);
   const [copied, setCopied] = useState(false);
 
   const copyUpi = async () => {
@@ -379,32 +378,36 @@ function PlatformSupportCard() {
     catch { alert("UPI ID: " + SOCIETY_UPI_ID); }
   };
 
-  if (!open) {
-    return (
-      <button onClick={() => setOpen(true)}
-        className="text-xs px-3 py-2.5 rounded-lg text-center"
-        style={{ background: C.accentSoft, color: C.accent }}>
-        💛 क्या आप Mitti Ki Dukaan को सपोर्ट करना चाहेंगे?
-      </button>
-    );
-  }
-
   return (
-    <div className="p-4 rounded-xl flex flex-col items-center gap-2 text-center" style={{ background: C.card, border: "1px solid " + C.border }}>
-      <p className="text-xs leading-relaxed" style={{ color: C.textBody }}>
-        यह platform उन लोगों की मदद के लिए बनाया गया है जो छोटे उद्योगों से अपना घर चलाते हैं।
-        Platform उनसे कुछ नहीं लेता — कोई commission नहीं।
-        Platform को चलाने में जो खर्चा आता है, उसके लिए आपका छोटा सा सपोर्ट हमारी मदद करेगा। 🙏
-      </p>
-      <img src={"https://api.qrserver.com/v1/create-qr-code/?size=150x150&data=" + encodeURIComponent("upi://pay?pa=" + SOCIETY_UPI_ID + "&pn=Mitti%20Ki%20Dukaan&cu=INR")}
-        alt="Support QR" className="rounded-lg mt-1" style={{ border: "1px solid " + C.border }} />
-      <div className="flex items-center gap-2 px-3 py-1.5 rounded-lg" style={{ background: C.bg, border: "1px solid " + C.border }}>
-        <p className="text-xs font-medium" style={{ color: C.textBody }}>{SOCIETY_UPI_ID}</p>
-        <button onClick={copyUpi} className="text-[11px] font-semibold shrink-0" style={{ color: C.accent }}>
-          {copied ? "✓ Copy हुआ" : "Copy करें"}
-        </button>
+    <div className="rounded-2xl overflow-hidden" style={{ background: C.card, border: "1px solid " + C.border }}>
+      <div className="px-4 py-3 flex items-center gap-2.5" style={{ background: C.accentSoft }}>
+        <div className="w-8 h-8 rounded-full flex items-center justify-center shrink-0" style={{ background: C.accent }}>
+          <span className="text-sm">💛</span>
+        </div>
+        <p className="font-semibold text-sm" style={{ color: C.accent }}>Platform को Support करें</p>
       </div>
-      <button onClick={() => setOpen(false)} className="text-[11px] mt-1" style={{ color: C.textMuted }}>बंद करें</button>
+      <div className="p-4 flex flex-col gap-3">
+        <p className="text-xs leading-relaxed" style={{ color: C.textBody }}>
+          यह platform उन लोगों की मदद के लिए बनाया गया है जो घर से अचार, पापड़ जैसे कुटीर उद्योग चलाकर अपना घर चलाते हैं।
+          यह platform उन्हें <b>पूरी तरह मुफ़्त</b> दिया जाता है — कोई commission नहीं लिया जाता।
+          Platform को चलाने में जो खर्चा आता है, उसमें आपका छोटा सा सहयोग हमारी मदद करेगा, ताकि यह हमेशा उनके लिए मुफ़्त रह सके। 🙏
+        </p>
+        <div className="flex items-center gap-3 justify-center py-2">
+          <img src={"https://api.qrserver.com/v1/create-qr-code/?size=130x130&data=" + encodeURIComponent("upi://pay?pa=" + SOCIETY_UPI_ID + "&pn=Mitti%20Ki%20Dukaan&cu=INR")}
+            alt="Support QR" className="rounded-lg" style={{ border: "1px solid " + C.border }} />
+          <div className="flex flex-col gap-1.5 items-start">
+            <p className="text-[11px]" style={{ color: C.textMuted }}>UPI ID से भी सहयोग करें</p>
+            <div className="flex items-center gap-2 px-3 py-1.5 rounded-lg" style={{ background: C.bg, border: "1px solid " + C.border }}>
+              <p className="text-xs font-medium" style={{ color: C.textBody }}>{SOCIETY_UPI_ID}</p>
+            </div>
+            <button onClick={copyUpi}
+              className="flex items-center justify-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold w-full"
+              style={{ background: C.accent, color: "#FFFFFF" }}>
+              {copied ? "✓ Copy हुआ" : "UPI ID Copy करें"}
+            </button>
+          </div>
+        </div>
+      </div>
     </div>
   );
 }
@@ -425,7 +428,7 @@ function GoogleLoginButton({ onClick, label }) {
   );
 }
 
-function OrderNow({ product, buyerUser }) {
+function OrderNow({ product, buyerUser, onPlaced }) {
   const isBuyerLoggedIn = buyerUser && !buyerUser.isAnonymous;
   const handleGoogleLogin = async () => {
     try { await signInWithPopup(auth, new GoogleAuthProvider()); }
@@ -442,6 +445,7 @@ function OrderNow({ product, buyerUser }) {
   const [placing, setPlacing] = useState(false);
   const [upiCopied, setUpiCopied] = useState(false);
   const [placedOrderId, setPlacedOrderId] = useState(null);
+  const [sellerNotified, setSellerNotified] = useState(false);
 
   useEffect(() => {
     try {
@@ -509,6 +513,7 @@ function OrderNow({ product, buyerUser }) {
       });
       setPlacedOrderId(id);
       setStage("done");
+      if (onPlaced) onPlaced();
     } catch (e) {
       alert("Order place नहीं हो पाया: " + e.message);
     } finally { setPlacing(false); }
@@ -527,12 +532,21 @@ function OrderNow({ product, buyerUser }) {
       });
       setPlacedOrderId(id);
       setStage("done");
+      if (onPlaced) onPlaced();
     } catch (e) {
       alert("Order place नहीं हो पाया: " + e.message);
     } finally { setPlacing(false); }
   };
 
   if (stage === "closed") {
+    if (product.inStock === false) {
+      return (
+        <div className="flex items-center justify-center gap-2 px-5 py-3 rounded-xl font-semibold text-sm w-full text-center"
+          style={{ background: "#FBE2DD", color: "#B83A2A" }}>
+          अभी उपलब्ध नहीं है — कृपया बाद में देखें
+        </div>
+      );
+    }
     return (
       <button onClick={() => setStage("form")}
         className="flex items-center justify-center gap-2 px-5 py-3 rounded-xl font-semibold text-sm w-full"
@@ -566,11 +580,22 @@ function OrderNow({ product, buyerUser }) {
           <p className="text-xs" style={{ color: C.textBody }}>Status "मेरे Orders" में देखा जा सकता है।</p>
         </div>
         {product.sellerPhone && (
-          <a href={notifySellerLink} target="_blank" rel="noopener noreferrer"
-            className="flex items-center justify-center gap-2 px-5 py-3 rounded-xl font-medium text-sm"
-            style={{ background: "#2BA84A", color: "#FFFFFF" }}>
-            <MessageCircle className="w-4 h-4" /> विक्रेता को WhatsApp पर सूचना भेजें
-          </a>
+          <div className="p-3 rounded-xl flex flex-col gap-2" style={{ background: C.card, border: "1px solid " + C.border }}>
+            <p className="text-xs leading-relaxed" style={{ color: C.textBody }}>
+              📢 आपका order platform पर सुरक्षित save हो गया है। विक्रेता को <b>तुरंत</b> पता चले इसके लिए नीचे बटन दबाकर एक WhatsApp संदेश भेजें — इससे आपका order जल्दी accept होगा।
+            </p>
+            {sellerNotified ? (
+              <div className="flex items-center justify-center gap-2 px-5 py-3 rounded-xl font-medium text-sm" style={{ background: "#DCF3DD", color: "#226B2E" }}>
+                <Check className="w-4 h-4" /> विक्रेता को सूचना भेज दी गई
+              </div>
+            ) : (
+              <a href={notifySellerLink} target="_blank" rel="noopener noreferrer" onClick={() => setSellerNotified(true)}
+                className="flex items-center justify-center gap-2 px-5 py-3 rounded-xl font-medium text-sm"
+                style={{ background: "#2BA84A", color: "#FFFFFF" }}>
+                <MessageCircle className="w-4 h-4" /> विक्रेता को WhatsApp पर सूचना भेजें
+              </a>
+            )}
+          </div>
         )}
         <PlatformSupportCard />
       </div>
@@ -702,17 +727,24 @@ function ProductCard({ product, onOpen }) {
     }
   };
 
+  const outOfStock = product.inStock === false;
+
   return (
     <button onClick={() => onOpen(product)}
       className="text-left rounded-2xl overflow-hidden transition-transform hover:-translate-y-1 relative"
       style={{ background: C.card, border: "1px solid " + C.border }}>
       <div className="aspect-square overflow-hidden relative">
-        <img src={product.img} alt={product.name} className="w-full h-full object-cover" />
+        <img src={product.img} alt={product.name} className="w-full h-full object-cover" style={{ filter: outOfStock ? "grayscale(1)" : "none", opacity: outOfStock ? 0.6 : 1 }} />
         <div onClick={handleCardShare}
           className="absolute top-2 right-2 p-1.5 rounded-full"
           style={{ background: "rgba(0,0,0,0.45)" }}>
           {cardCopied ? <Check className="w-3.5 h-3.5" style={{ color: "#FFFFFF" }} /> : <Share2 className="w-3.5 h-3.5" style={{ color: "#FFFFFF" }} />}
         </div>
+        {outOfStock && (
+          <div className="absolute bottom-0 left-0 right-0 py-1.5 text-center" style={{ background: "rgba(184,58,42,0.9)" }}>
+            <p className="text-[11px] font-semibold" style={{ color: "#FFFFFF" }}>अभी उपलब्ध नहीं</p>
+          </div>
+        )}
       </div>
       <div className="p-3">
         <p className="font-semibold text-[15px]" style={{ color: C.textHeading }}>{product.name}</p>
@@ -763,6 +795,7 @@ function ImageCarousel({ images, alt }) {
 
 function ProductDetail({ product, onBack, buyerUser }) {
   const [copied, setCopied] = useState(false);
+  const [orderPlaced, setOrderPlaced] = useState(false);
   const productUrl = window.location.origin + import.meta.env.BASE_URL + "?product=" + product.id;
 
   const handleShare = async () => {
@@ -790,25 +823,40 @@ function ProductDetail({ product, onBack, buyerUser }) {
         <button onClick={onBack} className="flex items-center gap-1.5 text-sm" style={{ color: C.accent }}>
           <ArrowLeft className="w-4 h-4" /> वापस जाएं
         </button>
-        <button onClick={handleShare} className="flex items-center gap-1.5 text-sm px-3 py-1.5 rounded-lg"
-          style={{ background: C.accentSoft, color: C.accent }}>
-          {copied ? "✓ Link Copy हुआ" : (<><Share2 className="w-3.5 h-3.5" /> Share करें</>)}
-        </button>
+        {!orderPlaced && (
+          <button onClick={handleShare} className="flex items-center gap-1.5 text-sm px-3 py-1.5 rounded-lg"
+            style={{ background: C.accentSoft, color: C.accent }}>
+            {copied ? "✓ Link Copy हुआ" : (<><Share2 className="w-3.5 h-3.5" /> Share करें</>)}
+          </button>
+        )}
       </div>
-      <ImageCarousel images={product.images && product.images.length ? product.images : (product.img ? [product.img] : [])} alt={product.name} />
+      {!orderPlaced && (
+        <>
+          <ImageCarousel images={product.images && product.images.length ? product.images : (product.img ? [product.img] : [])} alt={product.name} />
+          <div className="max-w-md mx-auto">
+            <div className="flex items-center gap-2 mb-1">
+              <h2 className="text-xl font-bold" style={{ color: C.textHeading, fontFamily: "Georgia, serif" }}>{product.name}</h2>
+              {product.inStock === false && (
+                <span className="text-[11px] font-semibold px-2 py-0.5 rounded-full shrink-0" style={{ background: "#FBE2DD", color: "#B83A2A" }}>
+                  स्टॉक ख़त्म
+                </span>
+              )}
+            </div>
+            <p className="text-sm flex items-center gap-1 mb-2" style={{ color: C.textMuted }}>
+              <MapPin className="w-3.5 h-3.5" /> {product.maker} · {product.village} {product.pincode ? "· पिनकोड " + product.pincode : ""}
+            </p>
+            <p className="text-sm mb-4 leading-relaxed" style={{ color: C.textBody }}>{product.desc}</p>
+            <div className="flex items-baseline gap-2 mb-5">
+              <p className="text-2xl font-bold" style={{ color: C.accent }}>&#x20B9;{product.price}</p>
+              <p className="text-sm" style={{ color: C.textMuted }}>/ {product.unit}</p>
+            </div>
+          </div>
+        </>
+      )}
       <div className="max-w-md mx-auto">
-        <h2 className="text-xl font-bold mb-1" style={{ color: C.textHeading, fontFamily: "Georgia, serif" }}>{product.name}</h2>
-        <p className="text-sm flex items-center gap-1 mb-2" style={{ color: C.textMuted }}>
-          <MapPin className="w-3.5 h-3.5" /> {product.maker} · {product.village} {product.pincode ? "· पिनकोड " + product.pincode : ""}
-        </p>
-        <p className="text-sm mb-4 leading-relaxed" style={{ color: C.textBody }}>{product.desc}</p>
-        <div className="flex items-baseline gap-2 mb-5">
-          <p className="text-2xl font-bold" style={{ color: C.accent }}>&#x20B9;{product.price}</p>
-          <p className="text-sm" style={{ color: C.textMuted }}>/ {product.unit}</p>
-        </div>
         <div className="flex flex-col gap-3">
-          <OrderNow product={product} buyerUser={buyerUser} />
-          <ChatWithSellerLink product={product} />
+          <OrderNow product={product} buyerUser={buyerUser} onPlaced={() => setOrderPlaced(true)} />
+          {!orderPlaced && <ChatWithSellerLink product={product} />}
         </div>
       </div>
     </div>
@@ -1003,7 +1051,7 @@ function PendingApprovalScreen({ onExit }) {
 }
 
 // ─── Vendor Panel ─────────────────────────────────────────────────────────────
-const emptyForm = { name: "", price: "", unit: "", category: "अचार", img: "", images: [], desc: "" };
+const emptyForm = { name: "", price: "", unit: "", category: "अचार", img: "", images: [], desc: "", inStock: true };
 const MAX_PRODUCT_IMAGES = 4;
 
 function VendorPanel({ vendor, products, addProduct, updateProduct, removeProduct, ownerId, onExit, reloadVendor }) {
@@ -1183,6 +1231,11 @@ function VendorPanel({ vendor, products, addProduct, updateProduct, removeProduc
 
   const handleDelete = async (id) => {
     if (confirm("क्या आप वाकई इस product को हटाना चाहते हैं?")) await removeProduct(id);
+  };
+
+  const toggleStock = async (p) => {
+    try { await updateDoc(doc(db, "products", p.id), { inStock: !(p.inStock !== false) }); }
+    catch (e) { alert("Stock update नहीं हो पाया: " + e.message); }
   };
 
   return (
@@ -1403,11 +1456,16 @@ function VendorPanel({ vendor, products, addProduct, updateProduct, removeProduc
             <div className="flex flex-col gap-2">
               {myProducts.map((p) => (
                 <div key={p.id} className="flex items-center gap-3 p-3 rounded-xl"
-                  style={{ background: C.card, border: "1px solid " + C.border }}>
-                  <img src={p.img} alt={p.name} className="w-12 h-12 rounded-lg object-cover" />
+                  style={{ background: C.card, border: "1px solid " + (p.inStock === false ? "#B83A2A" : C.border) }}>
+                  <img src={p.img} alt={p.name} className="w-12 h-12 rounded-lg object-cover" style={{ opacity: p.inStock === false ? 0.5 : 1 }} />
                   <div className="flex-1">
                     <p className="font-medium text-sm" style={{ color: C.textHeading }}>{p.name}</p>
                     <p className="text-xs" style={{ color: C.textMuted }}>&#x20B9;{p.price}</p>
+                    <button onClick={() => toggleStock(p)}
+                      className="text-[11px] font-semibold px-2 py-0.5 rounded-full mt-1"
+                      style={p.inStock === false ? { background: "#FBE2DD", color: "#B83A2A" } : { background: "#DCF3DD", color: "#226B2E" }}>
+                      {p.inStock === false ? "✗ स्टॉक ख़त्म — दिखाने के लिए टैप करें" : "✓ स्टॉक में है — टैप करके ख़त्म करें"}
+                    </button>
                   </div>
                   <button onClick={() => handleShareProduct(p)} className="p-2 rounded-lg" style={{ background: "#DCF3DD", color: "#226B2E" }} title="Product Share करें">
                     {sharedProductId === p.id ? <Check className="w-4 h-4" /> : <Share2 className="w-4 h-4" />}
@@ -1874,6 +1932,7 @@ function MyOrdersModal({ onClose, buyerUser }) {
               </div>
             );
           })}
+              <PlatformSupportCard />
             </div>
           </>
         )}
@@ -2081,6 +2140,10 @@ export default function ArtisanMarket() {
       {filtered.length === 0 && (
         <p className="text-center text-sm py-10" style={{ color: C.textMuted }}>कोई product नहीं मिला।</p>
       )}
+
+      <div className="max-w-md mx-auto px-5 py-4">
+        <PlatformSupportCard />
+      </div>
 
       <p className="text-xs text-center py-6" style={{ color: C.textMuted }}>
         Thrive Skills Educational Society की एक पहल · Technology Partner: Hector365
