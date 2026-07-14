@@ -316,6 +316,24 @@ function useAllOrders(enabled) {
 // Customer ke "मेरे Orders" — do tarike se orders milte hain:
 // 1) localStorage mein saved order IDs (guest/bina-login checkout)
 // 2) Firestore query by customerId (agar buyer Google se login hai — sabhi devices pe dikhega)
+// Product ki average rating — sirf tab query hoti hai jab detail page khula ho (grid card pe nahi,
+// taaki bewajah zyada Firestore reads na ho)
+function useProductRating(productId) {
+  const [stats, setStats] = useState({ avg: 0, count: 0 });
+  useEffect(() => {
+    if (!productId) return;
+    const q = query(collection(db, "orders"), where("productId", "==", productId));
+    const unsub = onSnapshot(q, (snap) => {
+      const ratings = snap.docs.map((d) => d.data().rating).filter((r) => typeof r === "number");
+      if (ratings.length === 0) { setStats({ avg: 0, count: 0 }); return; }
+      const avg = ratings.reduce((a, b) => a + b, 0) / ratings.length;
+      setStats({ avg, count: ratings.length });
+    });
+    return unsub;
+  }, [productId]);
+  return stats;
+}
+
 function useMyOrders(buyerUid) {
   const [ids, setIds] = useState(() => {
     try { return (JSON.parse(localStorage.getItem("mkd_my_orders") || "[]")).map((o) => o.id); }
@@ -796,6 +814,7 @@ function ImageCarousel({ images, alt }) {
 function ProductDetail({ product, onBack, buyerUser }) {
   const [copied, setCopied] = useState(false);
   const [orderPlaced, setOrderPlaced] = useState(false);
+  const { avg: ratingAvg, count: ratingCount } = useProductRating(product.id);
   const productUrl = window.location.origin + import.meta.env.BASE_URL + "?product=" + product.id;
 
   const handleShare = async () => {
@@ -845,6 +864,11 @@ function ProductDetail({ product, onBack, buyerUser }) {
             <p className="text-sm flex items-center gap-1 mb-2" style={{ color: C.textMuted }}>
               <MapPin className="w-3.5 h-3.5" /> {product.maker} · {product.village} {product.pincode ? "· पिनकोड " + product.pincode : ""}
             </p>
+            {ratingCount > 0 && (
+              <p className="text-sm mb-2" style={{ color: "#8A6A00" }}>
+                ⭐ {ratingAvg.toFixed(1)} ({ratingCount} {ratingCount === 1 ? "review" : "reviews"})
+              </p>
+            )}
             <p className="text-sm mb-4 leading-relaxed" style={{ color: C.textBody }}>{product.desc}</p>
             <div className="flex items-baseline gap-2 mb-5">
               <p className="text-2xl font-bold" style={{ color: C.accent }}>&#x20B9;{product.price}</p>
@@ -1054,7 +1078,50 @@ function PendingApprovalScreen({ onExit }) {
 const emptyForm = { name: "", price: "", unit: "", category: "अचार", img: "", images: [], desc: "", inStock: true };
 const MAX_PRODUCT_IMAGES = 4;
 
-function VendorPanel({ vendor, products, addProduct, updateProduct, removeProduct, ownerId, onExit, reloadVendor }) {
+function SalesSummary({ orders }) {
+  const now = new Date();
+  const delivered = orders.filter((o) => o.status === "delivered");
+
+  const isThisMonth = (o) => {
+    const d = o.createdAt?.toDate ? o.createdAt.toDate() : (o.createdAt ? new Date(o.createdAt) : null);
+    return d && d.getMonth() === now.getMonth() && d.getFullYear() === now.getFullYear();
+  };
+
+  const thisMonthDelivered = delivered.filter(isThisMonth);
+  const monthEarnings = thisMonthDelivered.reduce((sum, o) => sum + (Number(o.amount) || 0), 0);
+  const totalEarnings = delivered.reduce((sum, o) => sum + (Number(o.amount) || 0), 0);
+
+  const productCounts = {};
+  delivered.forEach((o) => { productCounts[o.productName] = (productCounts[o.productName] || 0) + (Number(o.quantity) || 1); });
+  const bestProduct = Object.entries(productCounts).sort((a, b) => b[1] - a[1])[0];
+
+  return (
+    <div className="rounded-2xl overflow-hidden mb-4" style={{ background: C.card, border: "1px solid " + C.border }}>
+      <div className="px-4 py-3" style={{ background: C.accentSoft }}>
+        <p className="font-semibold text-sm" style={{ color: C.accent }}>📊 आपकी कमाई</p>
+      </div>
+      <div className="grid grid-cols-2 gap-3 p-4">
+        <div>
+          <p className="text-xl font-bold" style={{ color: C.textHeading }}>&#x20B9;{monthEarnings}</p>
+          <p className="text-[11px]" style={{ color: C.textMuted }}>इस महीने की कमाई ({thisMonthDelivered.length} orders)</p>
+        </div>
+        <div>
+          <p className="text-xl font-bold" style={{ color: C.textHeading }}>&#x20B9;{totalEarnings}</p>
+          <p className="text-[11px]" style={{ color: C.textMuted }}>कुल कमाई ({delivered.length} orders)</p>
+        </div>
+        {bestProduct && (
+          <div className="col-span-2 pt-2" style={{ borderTop: "1px solid " + C.border }}>
+            <p className="text-xs" style={{ color: C.textBody }}>
+              🏆 सबसे ज़्यादा बिकने वाला: <b>{bestProduct[0]}</b> ({bestProduct[1]} बिके)
+            </p>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function VendorPanel({ vendor, products, addProduct, updateProduct, removeProduct, ownerId, onExit, reloadVendor, reloadProducts }) {
   const [editing, setEditing] = useState(null);
   const [form, setForm] = useState(emptyForm);
   const [busy, setBusy] = useState(false);
@@ -1062,6 +1129,7 @@ function VendorPanel({ vendor, products, addProduct, updateProduct, removeProduc
   const [upiInput, setUpiInput] = useState(vendor.upiId || "");
   const [phoneInput, setPhoneInput] = useState(vendor.phone || "");
   const [nameInput, setNameInput] = useState(vendor.name || "");
+  const [showProfileEdit, setShowProfileEdit] = useState(false);
   const [villageInput, setVillageInput] = useState(vendor.village || "");
   const [pincodeInput, setPincodeInput] = useState(vendor.pincode || "");
   const [savingUpi, setSavingUpi] = useState(false);
@@ -1233,9 +1301,18 @@ function VendorPanel({ vendor, products, addProduct, updateProduct, removeProduc
     if (confirm("क्या आप वाकई इस product को हटाना चाहते हैं?")) await removeProduct(id);
   };
 
+  const [stockOverrides, setStockOverrides] = useState({}); // turant visual feedback ke liye — Firestore sync hone tak
+
   const toggleStock = async (p) => {
-    try { await updateDoc(doc(db, "products", p.id), { inStock: !(p.inStock !== false) }); }
-    catch (e) { alert("Stock update नहीं हो पाया: " + e.message); }
+    const newValue = !(p.inStock !== false);
+    setStockOverrides((prev) => ({ ...prev, [p.id]: newValue })); // turant UI update
+    try {
+      await updateDoc(doc(db, "products", p.id), { inStock: newValue });
+      if (reloadProducts) await reloadProducts(); // asli data ke saath sync karo
+    } catch (e) {
+      setStockOverrides((prev) => ({ ...prev, [p.id]: !newValue })); // fail hua toh wapas palto
+      alert("Stock update नहीं हो पाया: " + e.message);
+    }
   };
 
   return (
@@ -1272,39 +1349,51 @@ function VendorPanel({ vendor, products, addProduct, updateProduct, removeProduc
         )}
 
         {/* Profile / UPI */}
-        <div className="flex flex-col gap-2 p-3 rounded-xl mb-4" style={{ background: C.card, border: "1px solid " + C.border }}>
-          <p className="text-xs font-semibold" style={{ color: C.textMuted }}>अपनी details update करें</p>
-          <input value={nameInput} onChange={(e) => setNameInput(e.target.value)}
-            placeholder="आपका नाम"
-            className="px-3 py-2 rounded-lg outline-none text-sm"
-            style={{ background: C.bg, border: "1px solid " + C.border, color: C.textBody }} />
-          <div className="flex gap-2">
-            <input value={villageInput} onChange={(e) => setVillageInput(e.target.value)}
-              placeholder="गांव/area"
-              className="flex-1 px-3 py-2 rounded-lg outline-none text-sm"
+        {!showProfileEdit ? (
+          <button onClick={() => setShowProfileEdit(true)}
+            className="w-full flex items-center justify-between px-4 py-3 rounded-xl mb-4 text-sm font-medium"
+            style={{ background: C.card, border: "1px solid " + C.border, color: C.textBody }}>
+            <span>👤 अपनी Details Update करें (नाम, गांव, फोन, UPI)</span>
+            <span style={{ color: C.textMuted }}>▼</span>
+          </button>
+        ) : (
+          <div className="flex flex-col gap-2 p-3 rounded-xl mb-4" style={{ background: C.card, border: "1px solid " + C.border }}>
+            <div className="flex items-center justify-between mb-1">
+              <p className="text-xs font-semibold" style={{ color: C.textMuted }}>अपनी details update करें</p>
+              <button onClick={() => setShowProfileEdit(false)}><X className="w-4 h-4" style={{ color: C.textMuted }} /></button>
+            </div>
+            <input value={nameInput} onChange={(e) => setNameInput(e.target.value)}
+              placeholder="आपका नाम"
+              className="px-3 py-2 rounded-lg outline-none text-sm"
               style={{ background: C.bg, border: "1px solid " + C.border, color: C.textBody }} />
-            <input value={pincodeInput} onChange={(e) => setPincodeInput(e.target.value.replace(/\D/g, "").slice(0, 6))}
-              placeholder="पिनकोड" inputMode="numeric"
-              className="w-28 px-3 py-2 rounded-lg outline-none text-sm"
+            <div className="flex gap-2">
+              <input value={villageInput} onChange={(e) => setVillageInput(e.target.value)}
+                placeholder="गांव/area"
+                className="flex-1 px-3 py-2 rounded-lg outline-none text-sm"
+                style={{ background: C.bg, border: "1px solid " + C.border, color: C.textBody }} />
+              <input value={pincodeInput} onChange={(e) => setPincodeInput(e.target.value.replace(/\D/g, "").slice(0, 6))}
+                placeholder="पिनकोड" inputMode="numeric"
+                className="w-28 px-3 py-2 rounded-lg outline-none text-sm"
+                style={{ background: C.bg, border: "1px solid " + C.border, color: C.textBody }} />
+            </div>
+            <input value={phoneInput} onChange={(e) => setPhoneInput(e.target.value)}
+              placeholder="WhatsApp/मोबाइल नंबर (10 digit)"
+              className="px-3 py-2 rounded-lg outline-none text-sm"
               style={{ background: C.bg, border: "1px solid " + C.border, color: C.textBody }} />
+            <div className="flex gap-2">
+              <input value={upiInput} onChange={(e) => setUpiInput(e.target.value)}
+                placeholder="UPI ID (जैसे: name@paytm)"
+                className="flex-1 px-3 py-2 rounded-lg outline-none text-sm"
+                style={{ background: C.bg, border: "1px solid " + C.border, color: C.textBody }} />
+              <button onClick={saveUpi} disabled={savingUpi}
+                className="px-4 py-2 rounded-lg text-sm font-medium disabled:opacity-50"
+                style={{ background: C.accent, color: "#FFFFFF" }}>
+                {savingUpi ? <Loader2 className="w-4 h-4 animate-spin" /> : "Save"}
+              </button>
+            </div>
+            {savingUpi && <p className="text-[11px]" style={{ color: C.textMuted }}>Profile और आपके सभी products update हो रहे हैं...</p>}
           </div>
-          <input value={phoneInput} onChange={(e) => setPhoneInput(e.target.value)}
-            placeholder="WhatsApp/मोबाइल नंबर (10 digit)"
-            className="px-3 py-2 rounded-lg outline-none text-sm"
-            style={{ background: C.bg, border: "1px solid " + C.border, color: C.textBody }} />
-          <div className="flex gap-2">
-            <input value={upiInput} onChange={(e) => setUpiInput(e.target.value)}
-              placeholder="UPI ID (जैसे: name@paytm)"
-              className="flex-1 px-3 py-2 rounded-lg outline-none text-sm"
-              style={{ background: C.bg, border: "1px solid " + C.border, color: C.textBody }} />
-            <button onClick={saveUpi} disabled={savingUpi}
-              className="px-4 py-2 rounded-lg text-sm font-medium disabled:opacity-50"
-              style={{ background: C.accent, color: "#FFFFFF" }}>
-              {savingUpi ? <Loader2 className="w-4 h-4 animate-spin" /> : "Save"}
-            </button>
-          </div>
-          {savingUpi && <p className="text-[11px]" style={{ color: C.textMuted }}>Profile और आपके सभी products update हो रहे हैं...</p>}
-        </div>
+        )}
 
         {/* Monthly Fee */}
         <div className="p-4 rounded-xl mb-4" style={{ background: C.accentSoft, border: "1px solid " + C.accent }}>
@@ -1351,6 +1440,9 @@ function VendorPanel({ vendor, products, addProduct, updateProduct, removeProduc
             </div>
           )}
         </div>
+
+        {/* Sales Summary */}
+        <SalesSummary orders={myOrders} />
 
         {/* Orders */}
         <div className="p-4 rounded-xl mb-4" style={{ background: C.card, border: "1px solid " + C.border }}>
@@ -1454,17 +1546,19 @@ function VendorPanel({ vendor, products, addProduct, updateProduct, removeProduc
               <Plus className="w-4 h-4" /> नया Product जोड़ें
             </button>
             <div className="flex flex-col gap-2">
-              {myProducts.map((p) => (
+              {myProducts.map((p) => {
+                const effectiveInStock = stockOverrides[p.id] !== undefined ? stockOverrides[p.id] : (p.inStock !== false);
+                return (
                 <div key={p.id} className="flex items-center gap-3 p-3 rounded-xl"
-                  style={{ background: C.card, border: "1px solid " + (p.inStock === false ? "#B83A2A" : C.border) }}>
-                  <img src={p.img} alt={p.name} className="w-12 h-12 rounded-lg object-cover" style={{ opacity: p.inStock === false ? 0.5 : 1 }} />
+                  style={{ background: C.card, border: "1px solid " + (!effectiveInStock ? "#B83A2A" : C.border) }}>
+                  <img src={p.img} alt={p.name} className="w-12 h-12 rounded-lg object-cover" style={{ opacity: !effectiveInStock ? 0.5 : 1 }} />
                   <div className="flex-1">
                     <p className="font-medium text-sm" style={{ color: C.textHeading }}>{p.name}</p>
                     <p className="text-xs" style={{ color: C.textMuted }}>&#x20B9;{p.price}</p>
                     <button onClick={() => toggleStock(p)}
                       className="text-[11px] font-semibold px-2 py-0.5 rounded-full mt-1"
-                      style={p.inStock === false ? { background: "#FBE2DD", color: "#B83A2A" } : { background: "#DCF3DD", color: "#226B2E" }}>
-                      {p.inStock === false ? "✗ स्टॉक ख़त्म — दिखाने के लिए टैप करें" : "✓ स्टॉक में है — टैप करके ख़त्म करें"}
+                      style={!effectiveInStock ? { background: "#FBE2DD", color: "#B83A2A" } : { background: "#DCF3DD", color: "#226B2E" }}>
+                      {!effectiveInStock ? "✗ स्टॉक ख़त्म — टैप करके वापस दिखाएं" : "✓ स्टॉक में है — टैप करके ख़त्म करें"}
                     </button>
                   </div>
                   <button onClick={() => handleShareProduct(p)} className="p-2 rounded-lg" style={{ background: "#DCF3DD", color: "#226B2E" }} title="Product Share करें">
@@ -1477,7 +1571,8 @@ function VendorPanel({ vendor, products, addProduct, updateProduct, removeProduc
                     <Trash2 className="w-4 h-4" />
                   </button>
                 </div>
-              ))}
+                );
+              })}
               {myProducts.length === 0 && (
                 <p className="text-sm text-center py-6" style={{ color: C.textMuted }}>अभी कोई product नहीं है।</p>
               )}
@@ -1860,6 +1955,50 @@ function SuperAdminPanel({ vendors, reloadVendors, products, removeProduct, onEx
   );
 }
 
+function OrderRatingBox({ order }) {
+  const [stars, setStars] = useState(0);
+  const [text, setText] = useState("");
+  const [submitting, setSubmitting] = useState(false);
+
+  if (typeof order.rating === "number") {
+    return (
+      <div className="flex items-center gap-1 mt-2 px-3 py-2 rounded-lg" style={{ background: "#FCEFC7" }}>
+        <p className="text-xs" style={{ color: "#8A6A00" }}>
+          आपने {"⭐".repeat(order.rating)} rating दी — धन्यवाद!
+        </p>
+      </div>
+    );
+  }
+
+  const submit = async () => {
+    if (stars === 0) { alert("कृपया कम से कम 1 star चुनें।"); return; }
+    setSubmitting(true);
+    try { await updateDoc(doc(db, "orders", order.id), { rating: stars, reviewText: text.trim() }); }
+    catch (e) { alert("Rating submit नहीं हो पाई: " + e.message); }
+    finally { setSubmitting(false); }
+  };
+
+  return (
+    <div className="mt-2 p-3 rounded-lg flex flex-col gap-2" style={{ background: C.bg, border: "1px solid " + C.border }}>
+      <p className="text-xs font-medium" style={{ color: C.textHeading }}>इस order को rate करें</p>
+      <div className="flex gap-1">
+        {[1, 2, 3, 4, 5].map((n) => (
+          <button key={n} onClick={() => setStars(n)} className="text-xl leading-none">
+            {n <= stars ? "⭐" : "☆"}
+          </button>
+        ))}
+      </div>
+      <input value={text} onChange={(e) => setText(e.target.value)} placeholder="कोई राय (ऐच्छिक)"
+        className="px-3 py-1.5 rounded-lg outline-none text-xs" style={{ background: C.card, border: "1px solid " + C.border, color: C.textBody }} />
+      <button onClick={submit} disabled={submitting || stars === 0}
+        className="px-3 py-1.5 rounded-lg text-xs font-semibold disabled:opacity-50"
+        style={{ background: C.accent, color: "#FFFFFF" }}>
+        {submitting ? "Submit हो रहा है..." : "Rating Submit करें"}
+      </button>
+    </div>
+  );
+}
+
 function MyOrdersModal({ onClose, buyerUser }) {
   const isBuyerLoggedIn = buyerUser && !buyerUser.isAnonymous;
   const orders = useMyOrders(isBuyerLoggedIn ? buyerUser.uid : null);
@@ -1922,6 +2061,7 @@ function MyOrdersModal({ onClose, buyerUser }) {
                   <span>{isExpanded ? "▲" : "▼"}</span>
                 </button>
                 {isExpanded && <OrderTracker order={o} />}
+                {o.status === "delivered" && <OrderRatingBox order={o} />}
 
                 {o.sellerPhone && (
                   <a href={"https://wa.me/91" + o.sellerPhone.replace(/\D/g, "")} target="_blank" rel="noopener noreferrer"
@@ -1943,7 +2083,7 @@ function MyOrdersModal({ onClose, buyerUser }) {
 
 // ─── Main App ─────────────────────────────────────────────────────────────────
 export default function ArtisanMarket() {
-  const { products, loading, error, addProduct, updateProduct, removeProduct } = useProducts();
+  const { products, loading, error, addProduct, updateProduct, removeProduct, reload: reloadProducts } = useProducts();
   const { user, authLoading } = useAuthUser();
   const { vendor, vendorLoading, reloadVendor } = useVendor(user);
   const { vendors, reload: reloadVendors } = useAllVendors();
@@ -2043,7 +2183,7 @@ export default function ArtisanMarket() {
       );
     }
     if (vendor.status === "approved") {
-      return <VendorPanel vendor={vendor} products={products} addProduct={addProduct} updateProduct={updateProduct} removeProduct={removeProduct} ownerId={user.uid} onExit={() => signOut(auth)} reloadVendor={reloadVendor} />;
+      return <VendorPanel vendor={vendor} products={products} addProduct={addProduct} updateProduct={updateProduct} removeProduct={removeProduct} ownerId={user.uid} onExit={() => signOut(auth)} reloadVendor={reloadVendor} reloadProducts={reloadProducts} />;
     }
   }
 
