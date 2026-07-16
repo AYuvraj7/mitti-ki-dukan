@@ -6,7 +6,7 @@ import {
 import { db, auth } from "./firebase.js";
 import {
   collection, getDocs, addDoc, updateDoc, deleteDoc, doc, getDoc, setDoc,
-  onSnapshot, query, where, serverTimestamp,
+  onSnapshot, query, where, serverTimestamp, orderBy, limit, startAfter,
 } from "firebase/firestore";
 import {
   signInWithEmailAndPassword, createUserWithEmailAndPassword, onAuthStateChanged, signOut,
@@ -75,6 +75,7 @@ async function payWithRazorpay({ amount, name, description, onSuccess, onFail })
 }
 
 const CATEGORIES = ["अचार", "पापड़", "मशरूम", "अन्य"];
+const PRODUCTS_PAGE_SIZE = 24; // ek page mein kitne products load honge
 
 const C = {
   bg: "#FBF5EC",
@@ -102,13 +103,26 @@ function Page({ children, wide = false }) {
 function useProducts() {
   const [products, setProducts] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [loadingMore, setLoadingMore] = useState(false);
   const [error, setError] = useState("");
+  const [lastDoc, setLastDoc] = useState(null);
+  const [hasMore, setHasMore] = useState(true);
+  // fullyLoaded = true jab poori product list already load ho chuki ho
+  // (chhota catalog, ya filter/deep-link/vendor/admin ki wajah se poora load karwaya gaya ho)
+  const [fullyLoaded, setFullyLoaded] = useState(false);
 
+  // Pehla page load karta hai — home page ke liye lightweight
   const load = async () => {
     setLoading(true);
     try {
-      const snap = await getDocs(collection(db, "products"));
-      setProducts(snap.docs.map((d) => ({ id: d.id, ...d.data() })));
+      const q = query(collection(db, "products"), orderBy("name"), limit(PRODUCTS_PAGE_SIZE));
+      const snap = await getDocs(q);
+      const docs = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+      setProducts(docs);
+      setLastDoc(snap.docs[snap.docs.length - 1] || null);
+      const gotFullPage = snap.docs.length === PRODUCTS_PAGE_SIZE;
+      setHasMore(gotFullPage);
+      setFullyLoaded(!gotFullPage); // page-size se kam mila matlab poora catalog hi itna hai
       setError("");
     } catch (e) {
       setError("Firebase से जुड़ नहीं पाया — कृपया src/firebase.js में अपनी config check करें।");
@@ -117,22 +131,70 @@ function useProducts() {
     }
   };
 
+  // Agla page load karta hai — "और Products देखें" button ke liye
+  const loadMore = async () => {
+    if (!hasMore || loadingMore || fullyLoaded) return;
+    setLoadingMore(true);
+    try {
+      const q = lastDoc
+        ? query(collection(db, "products"), orderBy("name"), startAfter(lastDoc), limit(PRODUCTS_PAGE_SIZE))
+        : query(collection(db, "products"), orderBy("name"), limit(PRODUCTS_PAGE_SIZE));
+      const snap = await getDocs(q);
+      const docs = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+      setProducts((prev) => [...prev, ...docs]);
+      setLastDoc(snap.docs[snap.docs.length - 1] || lastDoc);
+      const gotFullPage = snap.docs.length === PRODUCTS_PAGE_SIZE;
+      setHasMore(gotFullPage);
+      if (!gotFullPage) setFullyLoaded(true);
+    } catch (e) {
+      alert("और products load नहीं हो पाए, फिर से try करें।");
+    } finally {
+      setLoadingMore(false);
+    }
+  };
+
+  // Poori list ek saath load karta hai — Vendor Panel, Admin Panel, ya shared
+  // product/store link (?product=/?vendor=) ke liye zaroori, taaki koi product miss na ho
+  const loadAll = async () => {
+    if (fullyLoaded) return;
+    setLoadingMore(true);
+    try {
+      const q = query(collection(db, "products"), orderBy("name"));
+      const snap = await getDocs(q);
+      const docs = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+      setProducts(docs);
+      setLastDoc(snap.docs[snap.docs.length - 1] || null);
+      setHasMore(false);
+      setFullyLoaded(true);
+      setError("");
+    } catch (e) {
+      setError("Firebase से जुड़ नहीं पाया — कृपया src/firebase.js में अपनी config check करें।");
+    } finally {
+      setLoadingMore(false);
+    }
+  };
+
   useEffect(() => { load(); }, []);
 
   const addProduct = async (data, ownerId) => {
     await addDoc(collection(db, "products"), { ...data, price: Number(data.price), ownerId });
-    await load();
+    await loadAll();
   };
   const updateProduct = async (id, data) => {
     await updateDoc(doc(db, "products", id), { ...data, price: Number(data.price) });
-    await load();
+    await loadAll();
   };
   const removeProduct = async (id) => {
     await deleteDoc(doc(db, "products", id));
-    await load();
+    await loadAll();
   };
 
-  return { products, loading, error, addProduct, updateProduct, removeProduct, reload: load };
+  return {
+    products, loading, loadingMore, error,
+    hasMore: hasMore && !fullyLoaded,
+    addProduct, updateProduct, removeProduct,
+    loadMore, loadAll, reload: load,
+  };
 }
 
 function useVendor(user) {
@@ -2083,10 +2145,13 @@ function MyOrdersModal({ onClose, buyerUser }) {
 
 // ─── Main App ─────────────────────────────────────────────────────────────────
 export default function ArtisanMarket() {
-  const { products, loading, error, addProduct, updateProduct, removeProduct, reload: reloadProducts } = useProducts();
+  const { products, loading, loadingMore, error, hasMore, addProduct, updateProduct, removeProduct, loadMore, loadAll, reload: reloadProducts } = useProducts();
   const { user, authLoading } = useAuthUser();
   const { vendor, vendorLoading, reloadVendor } = useVendor(user);
   const { vendors, reload: reloadVendors } = useAllVendors();
+  // Google se login kiya hua buyer bhi "user" state mein aata hai — vendor-check aur
+  // full-product-list check, dono ke liye pehle hi pata hona zaroori hai
+  const isGoogleBuyer = user?.providerData?.some((p) => p.providerId === "google.com");
 
   const [selected, setSelected] = useState(null);
   const [category, setCategory] = useState("सभी");
@@ -2136,6 +2201,20 @@ export default function ArtisanMarket() {
     }
   }, [loading, products]);
 
+  // Vendor Panel, Admin Panel, filter/search, ya shared product/store link ke liye
+  // poori product list zaroori hai — pehla paginated page kaafi nahi hota in cases mein
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const filterActive = category !== "सभी" || !!pincodeQuery.trim() || !!query.trim() || !!storeFilter;
+    const needsFullList =
+      (user && user.email === SUPER_ADMIN_EMAIL) ||
+      (user && !user.isAnonymous && !isGoogleBuyer) ||
+      !!params.get("product") ||
+      !!params.get("vendor") ||
+      filterActive;
+    if (needsFullList) loadAll();
+  }, [user, category, pincodeQuery, query, storeFilter]);
+
   const filtered = products.filter((p) =>
     (category === "सभी" || p.category === category) &&
     (!pincodeQuery || p.pincode === pincodeQuery) &&
@@ -2165,10 +2244,6 @@ export default function ArtisanMarket() {
   if (user && user.email === SUPER_ADMIN_EMAIL) {
     return <SuperAdminPanel vendors={vendors} reloadVendors={reloadVendors} products={products} removeProduct={removeProduct} onExit={() => signOut(auth)} adminUid={user.uid} />;
   }
-
-  // Google se login kiya hua buyer bhi "user" state mein aata hai — usko vendor-check
-  // se exclude karna zaroori hai, warna use galti se "Registration Pending" screen dikh jaata
-  const isGoogleBuyer = user?.providerData?.some((p) => p.providerId === "google.com");
 
   if (user && !user.isAnonymous && !isGoogleBuyer && !vendorLoading) {
     if (!vendor || vendor.status === "pending") return <PendingApprovalScreen onExit={() => signOut(auth)} />;
@@ -2279,6 +2354,16 @@ export default function ArtisanMarket() {
 
       {filtered.length === 0 && (
         <p className="text-center text-sm py-10" style={{ color: C.textMuted }}>कोई product नहीं मिला।</p>
+      )}
+
+      {hasMore && (
+        <div className="max-w-6xl mx-auto px-5 pb-4 flex justify-center">
+          <button onClick={loadMore} disabled={loadingMore}
+            className="flex items-center gap-2 px-5 py-2.5 rounded-xl text-sm font-medium disabled:opacity-50"
+            style={{ background: C.card, border: "1px solid " + C.border, color: C.accent }}>
+            {loadingMore ? <Loader2 className="w-4 h-4 animate-spin" /> : null} और Products देखें
+          </button>
+        </div>
       )}
 
       <div className="max-w-md mx-auto px-5 py-4">
