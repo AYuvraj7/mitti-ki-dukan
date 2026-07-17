@@ -4,6 +4,7 @@ import {
   Lock, Plus, Pencil, Trash2, LogOut, Save, X, Loader2, UserPlus, Check, Clock, Shield, Share2,
 } from "lucide-react";
 import { db, auth } from "./firebase.js";
+import { payDonationWithRazorpay } from "./services/razorpayService.js";
 import {
   collection, getDocs, addDoc, updateDoc, deleteDoc, doc, getDoc, setDoc,
   onSnapshot, query, where, serverTimestamp, orderBy, limit, startAfter,
@@ -23,6 +24,14 @@ const SOCIETY_WHATSAPP = "918959992195";
 // Sirf yahan "false" ko "true" karo jab paid plans start karni ho
 // Kuch aur nahi badalna padega
 const PAYMENT_ENABLED = false;
+
+// ─── Razorpay Donation Config ("Platform को Support करें" feature ONLY) ───────
+// Ye seller subscription fee (upar wale PAYMENT_ENABLED) se bilkul alag hai —
+// sirf PlatformSupportCard yahan se values leta hai.
+// ⚠️ Yahan apni Razorpay Key ID daalo (public/safe for frontend — Key Secret KABHI
+// yahan mat daalo, wo sirf functions/index.js mein secure रहती है)
+const RAZORPAY_KEY_ID = "rzp_live_TEFVhlwHfWr2gI";
+const DONATION_PRESETS = [21, 51, 101];
 
 async function uploadToCloudinary(file) {
   const formData = new FormData();
@@ -451,12 +460,51 @@ function ChatWithSellerLink({ product }) {
 // yeh kabhi checkout ko block nahi karta, customer close/ignore kar sakta hai, aur seller ke
 // UPI se bilkul alag (Society ke) UPI ID pe jaata hai — isliye seller ka paisa kam nahi hota
 function PlatformSupportCard() {
-  const [copied, setCopied] = useState(false);
+  const [selectedAmount, setSelectedAmount] = useState(DONATION_PRESETS[1]); // ₹51 default
+  const [useCustom, setUseCustom] = useState(false);
+  const [customAmount, setCustomAmount] = useState("");
+  const [stage, setStage] = useState("idle"); // idle | processing | success | failed
+  const [errorMsg, setErrorMsg] = useState("");
+  const [paidAmount, setPaidAmount] = useState(null);
 
-  const copyUpi = async () => {
-    try { await navigator.clipboard.writeText(SOCIETY_UPI_ID); setCopied(true); setTimeout(() => setCopied(false), 1500); }
-    catch { alert("UPI ID: " + SOCIETY_UPI_ID); }
+  const effectiveAmount = useCustom ? Number(customAmount) || 0 : selectedAmount;
+
+  const handleSupport = async () => {
+    if (!effectiveAmount || effectiveAmount <= 0) {
+      alert("कृपया सही राशि चुनें।");
+      return;
+    }
+    setStage("processing");
+    setErrorMsg("");
+    await payDonationWithRazorpay({
+      amountInRupees: effectiveAmount,
+      razorpayKeyId: RAZORPAY_KEY_ID,
+      onSuccess: () => {
+        setPaidAmount(effectiveAmount);
+        setStage("success");
+      },
+      onFailure: (msg) => {
+        if (msg === "cancelled") {
+          setStage("idle"); // user ne modal close kiya — error nahi, chup-chaap form pe wapas
+        } else {
+          setErrorMsg(msg);
+          setStage("failed");
+        }
+      },
+    });
   };
+
+  if (stage === "success") {
+    return (
+      <div className="rounded-2xl overflow-hidden" style={{ background: C.card, border: "1px solid " + C.border }}>
+        <div className="p-5 flex flex-col items-center text-center gap-2">
+          <Check className="w-8 h-8" style={{ color: "#226B2E" }} />
+          <p className="font-semibold text-sm" style={{ color: "#226B2E" }}>धन्यवाद! आपका &#x20B9;{paidAmount} योगदान मिल गया</p>
+          <p className="text-xs" style={{ color: C.textBody }}>आपके सहयोग से यह platform artisans के लिए हमेशा मुफ़्त रह पाएगा। 🙏</p>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="rounded-2xl overflow-hidden" style={{ background: C.card, border: "1px solid " + C.border }}>
@@ -472,21 +520,44 @@ function PlatformSupportCard() {
           यह platform उन्हें <b>पूरी तरह मुफ़्त</b> दिया जाता है — कोई commission नहीं लिया जाता।
           Platform को चलाने में जो खर्चा आता है, उसमें आपका छोटा सा सहयोग हमारी मदद करेगा, ताकि यह हमेशा उनके लिए मुफ़्त रह सके। 🙏
         </p>
-        <div className="flex items-center gap-3 justify-center py-2">
-          <img src={"https://api.qrserver.com/v1/create-qr-code/?size=130x130&data=" + encodeURIComponent("upi://pay?pa=" + SOCIETY_UPI_ID + "&pn=Mitti%20Ki%20Dukaan&cu=INR")}
-            alt="Support QR" className="rounded-lg" style={{ border: "1px solid " + C.border }} />
-          <div className="flex flex-col gap-1.5 items-start">
-            <p className="text-[11px]" style={{ color: C.textMuted }}>UPI ID से भी सहयोग करें</p>
-            <div className="flex items-center gap-2 px-3 py-1.5 rounded-lg" style={{ background: C.bg, border: "1px solid " + C.border }}>
-              <p className="text-xs font-medium" style={{ color: C.textBody }}>{SOCIETY_UPI_ID}</p>
-            </div>
-            <button onClick={copyUpi}
-              className="flex items-center justify-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold w-full"
-              style={{ background: C.accent, color: "#FFFFFF" }}>
-              {copied ? "✓ Copy हुआ" : "UPI ID Copy करें"}
+
+        <div className="flex gap-2">
+          {DONATION_PRESETS.map((amt) => (
+            <button key={amt} onClick={() => { setUseCustom(false); setSelectedAmount(amt); }}
+              className="flex-1 px-3 py-2 rounded-lg text-sm font-semibold"
+              style={!useCustom && selectedAmount === amt
+                ? { background: C.accent, color: "#FFFFFF" }
+                : { background: C.bg, border: "1px solid " + C.border, color: C.textBody }}>
+              &#x20B9;{amt}
             </button>
-          </div>
+          ))}
         </div>
+
+        <button onClick={() => setUseCustom(true)}
+          className="text-xs text-left px-1"
+          style={{ color: useCustom ? C.accent : C.textMuted, fontWeight: useCustom ? 600 : 400 }}>
+          या अपनी राशि खुद डालें
+        </button>
+        {useCustom && (
+          <input type="number" min="1" value={customAmount} onChange={(e) => setCustomAmount(e.target.value)}
+            placeholder="राशि (₹) डालें"
+            className="px-3 py-2 rounded-lg outline-none text-sm"
+            style={{ background: C.bg, border: "1px solid " + C.border, color: C.textBody }} />
+        )}
+
+        {stage === "failed" && (
+          <p className="text-xs px-2 py-1.5 rounded-lg" style={{ background: "#FBE2DD", color: "#B83A2A" }}>
+            {errorMsg}
+          </p>
+        )}
+
+        <button onClick={handleSupport} disabled={stage === "processing"}
+          className="flex items-center justify-center gap-2 px-3 py-2.5 rounded-lg text-sm font-semibold disabled:opacity-60"
+          style={{ background: C.accent, color: "#FFFFFF" }}>
+          {stage === "processing" ? <Loader2 className="w-4 h-4 animate-spin" /> : null}
+          {stage === "processing" ? "Processing..." : "\u20B9" + (effectiveAmount || 0) + " से Support करें"}
+        </button>
+        <p className="text-[10px] text-center" style={{ color: C.textMuted }}>UPI, Cards, Net Banking, Wallets — Razorpay द्वारा secure payment</p>
       </div>
     </div>
   );

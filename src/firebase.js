@@ -1,6 +1,7 @@
 import { initializeApp } from "firebase/app";
 import { getFirestore } from "firebase/firestore";
 import { getAuth } from "firebase/auth";
+import { getFunctions } from "firebase/functions";
  
 const firebaseConfig = {
   apiKey: "AIzaSyAke8HI25KhI3UX4ErMBat00t_s-F3WBeE",
@@ -15,3 +16,7 @@ const app = initializeApp(firebaseConfig);
  
 export const db = getFirestore(app);
 export const auth = getAuth(app);
+// "asia-south1" region must match the region used in functions/index.js
+// Used only by the "Platform को Support करें" donation flow (Razorpay) —
+// does not affect any existing Firestore/Auth usage elsewhere in the app.
+export const functions = getFunctions(app, "asia-south1");
